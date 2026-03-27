@@ -142,6 +142,68 @@
             justify-content: space-between;
         }
 
+        .feature-report {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 12px;
+        }
+
+        .feature-group {
+            padding: 14px;
+            border-radius: 18px;
+            background: rgba(15, 23, 42, 0.68);
+            border: 1px solid rgba(148, 163, 184, 0.12);
+            min-height: 128px;
+        }
+
+        .feature-group h5 {
+            margin: 0 0 10px;
+            font-size: 13px;
+            color: var(--text);
+        }
+
+        .feature-group.unsupported h5 {
+            color: #ffccb8;
+        }
+
+        .feature-list {
+            list-style: none;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            align-content: flex-start;
+        }
+
+        .feature-list li {
+            padding: 7px 10px;
+            border-radius: 999px;
+            font-size: 12px;
+            line-height: 1.4;
+            background: rgba(30, 41, 59, 0.9);
+            color: var(--muted);
+            border: 1px solid rgba(148, 163, 184, 0.12);
+        }
+
+        .feature-group.supported .feature-list li {
+            color: #c9ffe4;
+            background: rgba(18, 59, 45, 0.72);
+            border-color: rgba(125, 211, 167, 0.2);
+        }
+
+        .feature-group.unsupported .feature-list li {
+            color: #ffd5c9;
+            background: rgba(82, 26, 21, 0.62);
+            border-color: rgba(255, 122, 89, 0.2);
+        }
+
+        .feature-empty {
+            color: var(--muted);
+            font-size: 12px;
+            line-height: 1.6;
+        }
+
         .status {
             color: var(--success);
             font-size: 13px;
@@ -312,6 +374,20 @@
                 <button id="downloadBtn" style="display:none;" onclick="downloadSVG()">导出独立 SVG</button>
                 <div id="statusText" class="status">等待上传 JSON 文件</div>
             </div>
+            <div class="feature-report">
+                <div class="feature-group supported">
+                    <h5>已识别且支持</h5>
+                    <ul id="supportedFeatures" class="feature-list">
+                        <li class="feature-empty">上传后会显示当前素材中已命中的可解析特性。</li>
+                    </ul>
+                </div>
+                <div class="feature-group unsupported">
+                    <h5>已识别但未支持</h5>
+                    <ul id="unsupportedFeatures" class="feature-list">
+                        <li class="feature-empty">如果素材里出现当前解析器未覆盖的特性，这里会列出来。</li>
+                    </ul>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -360,6 +436,7 @@
     let defsHTML = '';
     let idCounter = 0;
     let currentLottieInstance = null;
+    let globalFeatureReport = createEmptyFeatureReport();
 
     const ELLIPSE_KAPPA = 0.5522847498307936;
 
@@ -375,6 +452,8 @@
         reader.onload = async e => {
             try {
                 const sourceData = JSON.parse(e.target.result);
+                globalFeatureReport = analyzeLottieFeatures(sourceData);
+                renderFeatureReport(globalFeatureReport);
                 const previewData = cloneAnimationData(sourceData);
                 const compileData = cloneAnimationData(sourceData);
                 renderLottiePreview(previewData);
@@ -397,6 +476,194 @@
         return JSON.parse(JSON.stringify(data));
     }
 
+    function createEmptyFeatureReport() {
+        return {
+            supported: new Map(),
+            unsupported: new Map()
+        };
+    }
+
+    function analyzeLottieFeatures(data) {
+        const report = createEmptyFeatureReport();
+        const visitedComps = new Set();
+
+        function addFeature(map, name, note = '') {
+            const existing = map.get(name) || { count: 0, notes: new Set() };
+            existing.count += 1;
+            if (note) existing.notes.add(note);
+            map.set(name, existing);
+        }
+
+        function mark(name, supported, note = '') {
+            addFeature(supported ? report.supported : report.unsupported, name, note);
+        }
+
+        function scanPropertyFeature(prop, name) {
+            if (prop && prop.a === 1) {
+                mark(name, true);
+                if (hasTerminalMarkerKeyframe(prop)) {
+                    mark('结束标记关键帧', true, name);
+                }
+            }
+        }
+
+        function hasTerminalMarkerKeyframe(prop) {
+            if (!prop || prop.a !== 1 || !Array.isArray(prop.k) || prop.k.length < 2) return false;
+            const last = prop.k[prop.k.length - 1];
+            return !!(last && last.t != null && last.s == null && last.e == null);
+        }
+
+        function scanShapeItems(items) {
+            (items || []).forEach(item => {
+                if (!item || item.hd) return;
+
+                switch (item.ty) {
+                    case 'gr':
+                        mark('形状分组', true);
+                        scanShapeItems(item.it || []);
+                        break;
+                    case 'sh':
+                        mark('贝塞尔路径', true);
+                        if (item.ks && item.ks.a === 1) {
+                            const pathStates = [];
+                            (item.ks.k || []).forEach(kf => {
+                                const start = unwrapPropertyValue(kf.s);
+                                const end = unwrapPropertyValue(kf.e);
+                                if (start && start.v) pathStates.push(start);
+                                if (end && end.v) pathStates.push(end);
+                            });
+                            const vertexCounts = new Set(pathStates.map(state => state.v.length));
+                            mark('路径形变', vertexCounts.size <= 1, vertexCounts.size <= 1 ? '' : '锚点数量变化');
+                            if (hasTerminalMarkerKeyframe(item.ks)) {
+                                mark('结束标记关键帧', true, '路径形变');
+                            }
+                        }
+                        break;
+                    case 'rc':
+                        mark('矩形', true);
+                        break;
+                    case 'el':
+                        mark('椭圆', true);
+                        break;
+                    case 'sr':
+                        mark('星形/多边形', true);
+                        break;
+                    case 'fl':
+                        mark('纯色填充', true);
+                        break;
+                    case 'st':
+                        mark('纯色描边', true);
+                        break;
+                    case 'gf':
+                        mark(item.t === 1 ? '线性渐变填充' : '径向渐变填充', item.t === 1, item.t === 1 ? '' : '当前仅输出 linearGradient');
+                        break;
+                    case 'gs':
+                        mark(item.t === 1 ? '线性渐变描边' : '径向渐变描边', item.t === 1, item.t === 1 ? '' : '当前仅输出 linearGradient');
+                        break;
+                    case 'tm':
+                        mark('Trim Paths', false);
+                        break;
+                    case 'rp':
+                        mark('Repeater', false);
+                        break;
+                    case 'mm':
+                        mark('Merge Paths', false);
+                        break;
+                    case 'rd':
+                        mark('Rounded Corners', false);
+                        break;
+                    case 'pb':
+                        mark('Pucker & Bloat', false);
+                        break;
+                    case 'zz':
+                        mark('Zig Zag', false);
+                        break;
+                    case 'op':
+                        mark('Offset Paths', false);
+                        break;
+                    case 'tw':
+                        mark('Twist', false);
+                        break;
+                    case 'tr':
+                        mark('局部 Transform', true);
+                        scanPropertyFeature(item.sk, 'Skew');
+                        break;
+                    default:
+                        mark(`未知形状特性: ${item.ty}`, false);
+                        break;
+                }
+            });
+        }
+
+        function scanLayer(layer) {
+            if (!layer || layer.hd) return;
+
+            const typeMap = {
+                0: ['预合成图层', true],
+                1: ['纯色图层', true],
+                2: ['图片图层', true],
+                3: ['Null 图层', true],
+                4: ['形状图层', true],
+                5: ['文本图层', false],
+                13: ['相机图层', false]
+            };
+            const [typeName, typeSupported] = typeMap[layer.ty] || [`未知图层类型: ${layer.ty}`, false];
+            mark(typeName, typeSupported);
+
+            if (layer.parent != null) mark('父子矩阵继承', true);
+            if (layer.tt != null) mark(layer.tt === 3 || layer.tt === 4 ? '反向 Track Matte' : 'Track Matte', layer.tt === 1 || layer.tt === 2, layer.tt === 3 || layer.tt === 4 ? '当前未处理反向 matte' : '');
+            if (Array.isArray(layer.masksProperties) && layer.masksProperties.length) mark('图层 Masks', false);
+            if (layer.tm != null) mark('Time Remap', false);
+            if (layer.bm && layer.bm !== 0) mark('混合模式', false);
+
+            scanPropertyFeature(layer.ks && layer.ks.p, '位置动画');
+            scanPropertyFeature(layer.ks && layer.ks.s, '缩放动画');
+            scanPropertyFeature(layer.ks && (layer.ks.r || layer.ks.rz), '旋转动画');
+            scanPropertyFeature(layer.ks && layer.ks.o, '透明度动画');
+            scanPropertyFeature(layer.ks && layer.ks.sk, 'Skew');
+
+            if (layer.ty === 4) scanShapeItems(layer.shapes || []);
+
+            if (layer.ty === 0 && layer.refId && globalAssets[layer.refId] && !visitedComps.has(layer.refId)) {
+                visitedComps.add(layer.refId);
+                scanComposition(globalAssets[layer.refId]);
+            }
+        }
+
+        function scanComposition(compData) {
+            (compData.layers || []).forEach(scanLayer);
+        }
+
+        globalAssets = {};
+        (data.assets || []).forEach(asset => {
+            globalAssets[asset.id] = asset;
+        });
+        scanComposition(data);
+        return report;
+    }
+
+    function renderFeatureReport(report) {
+        renderFeatureList('supportedFeatures', report.supported, '当前素材里还没有命中已支持的解析特性。');
+        renderFeatureList('unsupportedFeatures', report.unsupported, '当前素材里没有检测到未支持特性。');
+    }
+
+    function renderFeatureList(elementId, featureMap, emptyText) {
+        const container = document.getElementById(elementId);
+        const entries = Array.from(featureMap.entries()).sort((left, right) => left[0].localeCompare(right[0], 'zh-CN'));
+
+        if (!entries.length) {
+            container.innerHTML = `<li class="feature-empty">${emptyText}</li>`;
+            return;
+        }
+
+        container.innerHTML = entries.map(([name, meta]) => {
+            const notes = Array.from(meta.notes || []).filter(Boolean);
+            const suffix = meta.count > 1 ? ` ×${meta.count}` : '';
+            const noteText = notes.length ? ` (${notes.join(' / ')})` : '';
+            return `<li title="${name}${noteText}">${name}${suffix}${noteText}</li>`;
+        }).join('');
+    }
+
     async function compileLottie(data, fileName = '') {
         try {
             updateStatus('正在编译 SVG...');
@@ -417,16 +684,15 @@
         globalFrameStart = data.ip || 0;
         globalFrameCount = Math.max(1, Math.round((data.op || 1) - globalFrameStart));
         globalDuration = (globalFrameCount / globalFPS).toFixed(3);
-        globalSampleFrames = [];
-        for (let i = 0; i <= globalFrameCount; i++) {
-            globalSampleFrames.push(globalFrameStart + i);
-        }
-        globalKeyTimes = globalSampleFrames.map((_, index) => formatNumber(index / globalFrameCount)).join(';');
 
         globalAssets = {};
         (data.assets || []).forEach(asset => {
             globalAssets[asset.id] = asset;
         });
+        globalSampleFrames = buildSampleFrames(data);
+        globalKeyTimes = globalSampleFrames.map(frame => {
+            return formatNumber((frame - globalFrameStart) / globalFrameCount);
+        }).join(';');
         defsHTML = '';
 
         const bodyHTML = renderComposition(data);
@@ -441,6 +707,52 @@
         document.getElementById('preview').innerHTML = finalSVG;
         document.getElementById('downloadBtn').style.display = 'inline-block';
         updateMeta(data);
+    }
+
+    function buildSampleFrames(data) {
+        const frameTimes = [];
+        for (let frame = 0; frame <= globalFrameCount; frame++) {
+            frameTimes.push(globalFrameStart + frame);
+        }
+
+        collectAnimatedTimes(data, frameTimes, new Set());
+
+        const rangeStart = globalFrameStart;
+        const rangeEnd = globalFrameStart + globalFrameCount;
+        const normalized = frameTimes
+            .map(value => Number(value))
+            .filter(value => Number.isFinite(value) && value >= rangeStart && value <= rangeEnd)
+            .sort((left, right) => left - right);
+
+        const unique = [];
+        normalized.forEach(value => {
+            if (!unique.length || Math.abs(unique[unique.length - 1] - value) > 0.0001) {
+                unique.push(value);
+            }
+        });
+
+        if (!unique.length || Math.abs(unique[0] - rangeStart) > 0.0001) unique.unshift(rangeStart);
+        if (Math.abs(unique[unique.length - 1] - rangeEnd) > 0.0001) unique.push(rangeEnd);
+        return unique;
+    }
+
+    function collectAnimatedTimes(value, frameTimes, visited) {
+        if (!value || typeof value !== 'object') return;
+        if (visited.has(value)) return;
+        visited.add(value);
+
+        if (value.a === 1 && Array.isArray(value.k) && value.k.some(keyframe => keyframe && typeof keyframe === 'object' && keyframe.t != null)) {
+            value.k.forEach(keyframe => {
+                if (keyframe && keyframe.t != null) frameTimes.push(keyframe.t);
+            });
+        }
+
+        if (Array.isArray(value)) {
+            value.forEach(entry => collectAnimatedTimes(entry, frameTimes, visited));
+            return;
+        }
+
+        Object.values(value).forEach(entry => collectAnimatedTimes(entry, frameTimes, visited));
     }
 
     function renderComposition(compData) {
@@ -622,7 +934,7 @@
             }
 
             const segmentMarkup = renderShapeSegment(currentGeometries, currentStyles, `${scope}_seg_${segments.length}`);
-            if (segmentMarkup) segments.unshift(segmentMarkup);
+            if (segmentMarkup) segments.push(segmentMarkup);
             currentGeometries = [];
             currentStyles = createShapeStyleState();
         }
@@ -649,7 +961,7 @@
                 geometry = renderShapeGeometry(item, `${scope}_shape_${index}`);
             }
 
-            if (geometry) currentGeometries.unshift(geometry);
+            if (geometry) currentGeometries.push(geometry);
         }
 
         flushSegment();
@@ -797,7 +1109,7 @@
                 });
             }
             attrs.push(`fill-rule="${mapFillRule(fillItem.r)}"`);
-        } else if (strokeItem) {
+        } else if (strokeItem || gradientStrokeItem) {
             attrs.push('fill="none"');
         }
 
@@ -1010,26 +1322,79 @@
 
         const keyframes = prop.k.filter(kf => kf && kf.t != null);
         if (!keyframes.length) return cloneValue(fallback);
-        if (frame <= keyframes[0].t) return cloneValue(unwrapPropertyValue(keyframes[0].s != null ? keyframes[0].s : keyframes[0].e));
+
+        const firstResolvedValue = getFirstKeyframeValue(keyframes);
+        const lastResolvedValue = getLastKeyframeValue(keyframes);
+        if (frame <= keyframes[0].t) return cloneValue(firstResolvedValue != null ? firstResolvedValue : fallback);
+
+        let previousResolvedValue = firstResolvedValue;
 
         for (let index = 0; index < keyframes.length; index++) {
             const current = keyframes[index];
             const next = keyframes[index + 1];
-            const currentStart = unwrapPropertyValue(current.s != null ? current.s : current.e);
+            const currentStart = getKeyframeValue(current, false);
+            const currentEnd = getKeyframeEndValue(current);
+            const segmentStart = currentStart != null ? currentStart : (currentEnd != null ? currentEnd : previousResolvedValue);
 
-            if (!next) return cloneValue(unwrapPropertyValue(current.e != null ? current.e : currentStart));
+            if (!next) {
+                return cloneValue(currentEnd != null
+                    ? currentEnd
+                    : (currentStart != null ? currentStart : (previousResolvedValue != null ? previousResolvedValue : lastResolvedValue)));
+            }
 
             if (frame < next.t) {
-                if (current.h === 1) return cloneValue(currentStart);
-                const endValue = unwrapPropertyValue(current.e != null ? current.e : next.s);
+                if (current.h === 1) return cloneValue(segmentStart != null ? segmentStart : fallback);
+                const nextStart = getKeyframeValue(next, false);
+                const endValue = currentEnd != null ? currentEnd : (nextStart != null ? nextStart : segmentStart);
+                if (segmentStart == null || endValue == null) {
+                    return cloneValue(endValue != null ? endValue : (segmentStart != null ? segmentStart : fallback));
+                }
                 const progress = clamp((frame - current.t) / Math.max(0.000001, next.t - current.t), 0, 1);
                 const easedProgress = applyBezierEase(progress, current);
-                return interpolateValue(currentStart, endValue, easedProgress);
+                return interpolateValue(segmentStart, endValue, easedProgress);
+            }
+
+            if (currentEnd != null) {
+                previousResolvedValue = currentEnd;
+            } else if (currentStart != null) {
+                previousResolvedValue = currentStart;
             }
         }
 
-        const last = keyframes[keyframes.length - 1];
-        return cloneValue(unwrapPropertyValue(last.e != null ? last.e : last.s));
+        return cloneValue(lastResolvedValue != null ? lastResolvedValue : fallback);
+    }
+
+    function getKeyframeValue(keyframe, preferEnd = false) {
+        if (!keyframe) return null;
+        const rawValue = preferEnd
+            ? (keyframe.e != null ? keyframe.e : keyframe.s)
+            : (keyframe.s != null ? keyframe.s : keyframe.e);
+        const value = unwrapPropertyValue(rawValue);
+        return value == null ? null : value;
+    }
+
+    function getKeyframeEndValue(keyframe) {
+        if (!keyframe || keyframe.e == null) return null;
+        const value = unwrapPropertyValue(keyframe.e);
+        return value == null ? null : value;
+    }
+
+    function getFirstKeyframeValue(keyframes) {
+        for (let index = 0; index < keyframes.length; index++) {
+            const value = getKeyframeValue(keyframes[index], false);
+            if (value != null) return value;
+        }
+        return null;
+    }
+
+    function getLastKeyframeValue(keyframes) {
+        for (let index = keyframes.length - 1; index >= 0; index--) {
+            const endValue = getKeyframeEndValue(keyframes[index]);
+            if (endValue != null) return endValue;
+            const startValue = getKeyframeValue(keyframes[index], false);
+            if (startValue != null) return startValue;
+        }
+        return null;
     }
 
     function unwrapPropertyValue(value) {
