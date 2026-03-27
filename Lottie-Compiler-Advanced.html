@@ -460,7 +460,7 @@
                 const matteLayer = layers[index - 1];
                 if (matteLayer) {
                     matteConsumed.add(index - 1);
-                    const maskId = buildTrackMatte(matteLayer, layersByInd, layer.tt);
+                    const maskId = buildTrackMatte(matteLayer, layer, layersByInd, layer.tt);
                     maskAttr = ` mask="url(#${maskId})"`;
                 }
             }
@@ -475,11 +475,10 @@
         return html;
     }
 
-    function buildTrackMatte(matteLayer, layersByInd, matteType) {
+    function buildTrackMatte(matteLayer, maskedLayer, layersByInd, matteType) {
         const maskId = getUID('mask');
         const maskContent = renderLayer(matteLayer, layersByInd, {
-            rootLayer: matteLayer,
-            asMask: true
+            rootLayer: matteLayer
         });
         const maskType = matteType === 2 || matteType === 4 ? 'luminance' : 'alpha';
         defsHTML += `\n<mask id="${maskId}" maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse" style="mask-type: ${maskType};">\n${maskContent}\n</mask>`;
@@ -500,10 +499,12 @@
                 {
                     includeOpacity: i === chain.length - 1,
                     includeWindow: i === chain.length - 1,
-                    layer: i === chain.length - 1 ? layer : null,
-                    outerAttributes: i === chain.length - 1 && options.maskAttr ? options.maskAttr : ''
+                    layer: i === chain.length - 1 ? layer : null
                 }
             );
+        }
+        if (options.maskAttr) {
+            wrapped = `<g${options.maskAttr}>${wrapped}</g>`;
         }
         return wrapped;
     }
@@ -546,6 +547,7 @@
         return parents;
     }
 
+
     function applyTransformWrappers(transformData, innerHTML, key, options = {}) {
         let wrapped = innerHTML;
 
@@ -568,7 +570,7 @@
 
         wrapped = wrapAnimatedTransform(wrapped, 'translate', `position_${key}`, frame => {
             return getPositionValue(transformData, frame);
-        }, [0, 0], options.outerAttributes || '');
+        }, [0, 0]);
 
         if (options.includeOpacity) {
             wrapped = wrapAnimatedAttribute(wrapped, 'opacity', `opacity_${key}`, frame => {
@@ -957,7 +959,7 @@
         return vertices.map((point, index) => `${index === 0 ? 'M' : 'L'} ${formatNumber(point[0])} ${formatNumber(point[1])}`).join(' ') + ' Z';
     }
 
-    function wrapAnimatedTransform(innerHTML, type, key, sampler, identityValue, outerAttributes = '') {
+    function wrapAnimatedTransform(innerHTML, type, key, sampler, identityValue) {
         const sampledValues = globalSampleFrames.map(frame => sampler(frame));
         const stringValues = sampledValues.map(value => formatTransformValue(type, value));
         if (allValuesEqual(stringValues) && valuesMatchIdentity(sampledValues[0], identityValue)) {
@@ -966,7 +968,7 @@
 
         const transformAttr = ` transform="${type}(${stringValues[0]})"`;
         const animateHTML = allValuesEqual(stringValues) ? '' : buildAnimateTransformElement(type, stringValues, key);
-        return `<g${outerAttributes}${transformAttr}>${animateHTML}${innerHTML}</g>`;
+        return `<g${transformAttr}>${animateHTML}${innerHTML}</g>`;
     }
 
     function wrapAnimatedAttribute(innerHTML, attributeName, key, sampler, identityValue) {
