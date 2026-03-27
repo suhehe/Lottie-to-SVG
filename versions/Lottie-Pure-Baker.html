@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>Lottie to Pure SVG Baker (V5)</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/lottie-web/5.12.2/lottie.min.js"></script>
+    <style>
+        body { font-family: -apple-system, sans-serif; padding: 30px; background: #0f172a; color: #f8fafc; }
+        .container { max-width: 900px; margin: 0 auto; background: #1e293b; padding: 40px; border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
+        .upload-area { border: 2px dashed #6366f1; padding: 40px; text-align: center; border-radius: 12px; background: #312e81; cursor: pointer; transition: 0.3s; margin-bottom: 20px;}
+        .upload-area:hover { background: #3730a3; border-color: #818cf8; }
+        .settings { display: flex; gap: 20px; margin-bottom: 20px; align-items: center; background: #0f172a; padding: 15px; border-radius: 8px;}
+        .settings input { width: 60px; padding: 5px; text-align: center; border-radius: 4px; border: 1px solid #475569; background: #1e293b; color: white;}
+        #progress-bar { width: 0%; height: 5px; background: #10b981; transition: 0.1s; margin-bottom: 20px; border-radius: 3px;}
+        button { background: #10b981; color: white; border: none; padding: 12px 24px; border-radius: 6px; cursor: pointer; font-size: 16px; font-weight: bold; display: none;}
+        button:hover { background: #059669; }
+        textarea { width: 100%; height: 200px; margin-top: 20px; font-family: monospace; font-size: 12px; background: #0f172a; color: #a5b4fc; border: 1px solid #334155; padding: 10px; border-radius: 8px; box-sizing: border-box;}
+        #hidden-lottie { position: absolute; left: -9999px; top: -9999px; width: 500px; height: 500px; } /* 隐藏的渲染沙盒 */
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>🔥 Lottie Pure SVG Baker (无 JS 烘焙版)</h2>
+    <p style="color:#94a3b8;">自动遍历解析帧数据，将 Transform/Opacity/Color 烘焙为纯 CSS 动画。</p>
+
+    <div class="settings">
+        <label title="烘焙间隔越小，动画越平滑(弧线越准)，但文件越大。推荐 2-5">
+            <b>烘焙采样间隔 (帧):</b> 
+            <input type="number" id="bakeStep" value="2" min="1" max="10">
+        </label>
+        <span style="color:#94a3b8; font-size: 13px;">(数字越小，运动曲线越完美，文件体积相应变大)</span>
+    </div>
+
+    <div class="upload-area" onclick="document.getElementById('fileInput').click()">
+        <h3 id="upload-text">📥 点击上传 Lottie JSON 文件</h3>
+        <input type="file" id="fileInput" accept=".json" style="display: none;" onchange="handleFileSelect(event)">
+    </div>
+
+    <div id="progress-bar"></div>
+    <div id="status" style="margin-bottom: 20px; color: #10b981;"></div>
+
+    <button id="downloadBtn" onclick="downloadSVG()">⬇️ 下载纯净 SVG 文件</button>
+    <textarea id="output" readonly placeholder="烘焙后的原生 SVG 代码将在此显示..."></textarea>
+</div>
+
+<!-- 幕后渲染沙盒 -->
+<div id="hidden-lottie"></div>
+
+<script>
+    let finalSVGString = '';
+    let currentAnim = null;
+
+    function handleFileSelect(event) {
+        const file = event.target.files[0];
+        if (!file) return;
+
+        document.getElementById('upload-text').innerText = `正在处理: ${file.name}`;
+        document.getElementById('progress-bar').style.width = '0%';
+        document.getElementById('output').value = '';
+        document.getElementById('downloadBtn').style.display = 'none';
+
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            const lottieData = JSON.parse(e.target.result);
+            startBakingProcess(lottieData, file.name);
+        };
+        reader.readAsText(file);
+    }
+
+    function startBakingProcess(animationData, filename) {
+        const container = document.getElementById('hidden-lottie');
+        container.innerHTML = ''; // 清理沙盒
+
+        // 在沙盒中加载 Lottie
+        currentAnim = lottie.loadAnimation({
+            container: container,
+            renderer: 'svg',
+            loop: false,
+            autoplay: false,
+            animationData: animationData
+        });
+
+        currentAnim.addEventListener('DOMLoaded', () => {
+            bakeAnimation(filename);
+        });
+    }
+
+    async function bakeAnimation(filename) {
+        const bakeStep = parseInt(document.getElementById('bakeStep').value) || 2;
+        const totalFrames = currentAnim.totalFrames;
+        const fps = currentAnim.frameRate;
+        const duration = (totalFrames / fps).toFixed(3);
+        const svgNode = document.querySelector('#hidden-lottie svg');
+        
+        // 1. 标记所有可动画节点 (g, path, rect, stop等)
+        const trackableElements = svgNode.querySelectorAll('g, path, rect, ellipse, stop');
+        const trackingData = new Map();
+
+        trackableElements.forEach((el, index) => {
+            const id = `bake_${index}`;
+            el.setAttribute('data-bake-id', id);
+            trackingData.set(id, { element: el, frames: [] });
+        });
+
+        // 2. 虚拟播放头扫描 (Baking Loop)
+        const statusEl = document.getElementById('status');
+        
+        for (let frame = 0; frame <= totalFrames; frame += bakeStep) {
+            currentAnim.goToAndStop(frame, true);
+            const percentage = ((frame / totalFrames) * 100).toFixed(2);
+            
+            trackableElements.forEach(el => {
+                const id = el.getAttribute('data-bake-id');
+                // 提取核心属性
+                const state = {
+                    pct: percentage,
+                    transform: el.getAttribute('transform') || '',
+                    opacity: el.getAttribute('opacity') || el.style.opacity || '',
+                    fill: el.getAttribute('fill') || el.style.fill || '',
+                    stroke: el.getAttribute('stroke') || el.style.stroke || '',
+                    stopColor: el.getAttribute('stop-color') || el.style.stopColor || ''
+                };
+                trackingData.get(id).frames.push(state);
+            });
+
+            // 更新进度条
+            document.getElementById('progress-bar').style.width = `${percentage}%`;
+            statusEl.innerText = `正在烘焙关键帧... ${percentage}%`;
+            await new Promise(r => setTimeout(r, 0)); // 让出主线程，防止浏览器卡死
+        }
+
+        // 3. 生成 CSS @keyframes
+        statusEl.innerText = `正在生成原生 CSS 代码...`;
+        let cssString = `/* Pure SVG Baked by Converter */\n:root { --duration: ${duration}s; }\ng { transform-origin: 0 0; }\n`;
+        
+        trackingData.forEach((data, id) => {
+            const frames = data.frames;
+            // 检查这个节点是否有实质性的动画变化
+            const isAnimated = frames.some(f => 
+                f.transform !== frames[0].transform || 
+                f.opacity !== frames[0].opacity || 
+                f.fill !== frames[0].fill || 
+                f.stopColor !== frames[0].stopColor
+            );
+
+            if (isAnimated) {
+                const animName = `anim_${id}`;
+                cssString += `.${id} { animation: ${animName} var(--duration) linear infinite; }\n`;
+                cssString += `@keyframes ${animName} {\n`;
+                
+                frames.forEach(f => {
+                    let props = '';
+                    if (f.transform) props += `transform: ${f.transform}; `;
+                    if (f.opacity !== '') props += `opacity: ${f.opacity}; `;
+                    if (f.fill && f.fill.includes('rgb')) props += `fill: ${f.fill}; `;
+                    if (f.stopColor) props += `stop-color: ${f.stopColor}; `;
+                    
+                    if (props) {
+                        cssString += `  ${f.pct}% { ${props}}\n`;
+                    }
+                });
+                cssString += `}\n`;
+                
+                // 将 class 添加到原始 DOM
+                data.element.classList.add(id);
+            }
+            
+            // 清理临时属性
+            data.element.removeAttribute('data-bake-id');
+            data.element.removeAttribute('transform');
+            data.element.removeAttribute('opacity');
+            // 注意：不移除默认的 fill，否则第0帧可能会闪烁
+        });
+
+        // 4. 清理 Lottie 生成的多余标签 (保持纯净)
+        svgNode.removeAttribute('style'); // Lottie 会加尺寸限制
+        const defs = svgNode.querySelector('defs') || document.createElement('defs');
+        const styleTag = document.createElement('style');
+        styleTag.textContent = `\n/* <![CDATA[ */\n${cssString}\n/* ]]> */\n`;
+        defs.prepend(styleTag);
+        
+        if (!svgNode.querySelector('defs')) {
+            svgNode.prepend(defs);
+        }
+
+        // 序列化
+        finalSVGString = new XMLSerializer().serializeToString(svgNode);
+        
+        // 格式化输出
+        document.getElementById('output').value = finalSVGString;
+        const kbSize = (finalSVGString.length / 1024).toFixed(1);
+        statusEl.innerText = `✅ 烘焙成功！纯原生 SVG 生成完毕 (文件大小: ${kbSize} KB)`;
+        
+        const btn = document.getElementById('downloadBtn');
+        btn.style.display = 'inline-block';
+        btn.dataset.filename = filename.replace('.json', '-pure.svg');
+    }
+
+    function downloadSVG() {
+        const blob = new Blob([finalSVGString], { type: 'image/svg+xml' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = document.getElementById('downloadBtn').dataset.filename || 'baked-animation.svg';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    }
+</script>
+</body>
+</html>

@@ -1,0 +1,119 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 160 160" width="160" height="160" preserveAspectRatio="xMidYMid meet">
+    <defs>
+      <style>
+        <![CDATA[
+        /* 1. Reset & Global Variables */
+        :root {
+          --duration: 3.5s; /* 105 frames / 30 fps */
+          --ease-in-out: cubic-bezier(0.333, 0, 0.667, 1);
+        }
+        g { transform-origin: 0 0; }
+  
+        /* 2. Keyframes for Star Parts */
+        @keyframes star-main-scale {
+          0%, 38% { transform: scale(1, 1); }
+          45.2% { transform: scale(0.22, 1); } /* frame 47.5 */
+          52.3%, 100% { transform: scale(1, 1); }
+        }
+  
+        @keyframes star-vertical-scale {
+          0%, 38% { transform: scale(0.3, 0.3) translate(46.5px, 22px); }
+          45.2% { transform: scale(0.6, 0.6) translate(61.5px, 13.25px); }
+          52.3% { transform: scale(0.3, 0.3) translate(45.06px, 22.8px); }
+          100% { transform: scale(0.3, 0.3) translate(46.5px, 22px); }
+        }
+  
+        @keyframes star-vertical-color {
+          0%, 38% { fill: #DAD4FB; }
+          45.2% { fill: #8350F2; }
+          52.3%, 100% { fill: #DAD4FB; }
+        }
+  
+        /* 3. Gradient Animation (Shimmer) */
+        @keyframes shimmer-move {
+          0% { transform: translate(-1920px, 0); }
+          42.8% { transform: translate(0px, 0); }
+          43.9% { transform: translate(-1920px, 0); }
+          85.7%, 100% { transform: translate(0px, 0); }
+        }
+  
+        @keyframes color-layer-opacity {
+          0%, 42.8% { opacity: 0; }
+          50% { opacity: 1; }
+          87.1% { opacity: 1; }
+          99.5%, 100% { opacity: 0; }
+        }
+  
+        /* 4. Layer Classes */
+        .star-main {
+          animation: star-main-scale var(--duration) var(--ease-in-out) infinite;
+          fill: #DAD4FB;
+        }
+        .star-vertical {
+          animation: star-vertical-scale var(--duration) var(--ease-in-out) infinite,
+                     star-vertical-color var(--duration) var(--ease-in-out) infinite;
+        }
+        .shimmer-rect {
+          animation: shimmer-move var(--duration) linear infinite;
+        }
+        .color-matte-group {
+          animation: color-layer-opacity var(--duration) var(--ease-in-out) infinite;
+        }
+        ]]>
+      </style>
+  
+      <!-- 5. Paths extracted from Lottie JSON -->
+      <!-- Subtract 14: The 4-pointed main star shape -->
+      <path id="path-star-main" d="M1.403,-18.106 C1.247,-18.765 0.677,-19.25 0,-19.25 C-0.678,-19.25 -1.249,-18.765 -1.405,-18.105 C-1.405,-18.105 -2.027,-15.478 -2.027,-15.478 C-3.04,-11.532 -5.339,-9.558 -8.88,-7.957 C-12.336,-6.392 -15.891,-5.477 -19.419,-4.446 C-23.365,-3.433 -23.14,-1.092 -19.194,-0.08 C-16.559,0.598 -13.923,1.275 -11.288,1.953 C-7.342,2.966 -5.339,5.339 -4.443,7.957 C-3.547,10.575 -2.632,13.193 -2.027,15.478 C-1.871,16.137 -1.249,16.786 0,16.786 C1.249,16.786 1.871,16.137 2.027,15.478 C2.027,15.478 2.966,12.512 4.443,7.957 C5.339,5.339 7.342,2.966 11.288,1.953 C15.234,0.941 18.105,1.403 19.25,0 C19.25,0 19.25,0 19.25,0 C19.25,-0.678 18.103,-1.405 18.103,-1.405 C15.473,-2.028 11.527,-3.04 7.953,-4.446 C4.443,-7.957 2.966,-11.527 2.027,-15.478 Z" />
+  
+      <!-- Subtract 17: Vertical Slender Part -->
+      <path id="path-star-vertical" d="M1.17,-18.106 C1.04,-18.765 0.565,-19.25 0,-19.25 C-0.565,-19.25 -1.041,-18.765 -1.171,-18.105 C-1.171,-18.105 -1.69,-15.478 -1.69,-15.478 C-2.413,-11.532 -3.173,-9.558 -3.173,-7.957 C-3.173,-6.392 -6.375,-1.562 -6.375,0 C-6.375,1.562 -3.173,6.392 -3.173,7.957 C-3.173,9.558 -2.413,11.532 -1.69,15.478 C-1.56,16.137 -1.171,18.104 -1.171,18.104 C-1.041,18.763 -0.565,19.25 0,19.25 C0.565,19.25 1.041,18.763 1.17,18.105 C1.17,18.105 1.69,15.478 1.69,15.478 C2.413,11.532 3.173,9.558 3.173,7.957 C3.173,6.392 6.375,1.562 6.375,0 C6.375,-1.562 3.173,-6.392 3.173,-7.957 C3.173,-9.558 2.413,-11.532 1.69,-15.478 Z" />
+  
+      <!-- 6. Shimmer Gradient Definition -->
+      <linearGradient id="grad-shimmer" x1="0%" y1="0%" x2="100%" y2="0%">
+        <stop offset="0%" stop-color="#6E73F8" />
+        <stop offset="12.3%" stop-color="#ED9EFF" />
+        <stop offset="24.7%" stop-color="#88A0FF" />
+        <stop offset="38%" stop-color="#ED9EFF" />
+        <stop offset="51.8%" stop-color="#B975E9" />
+        <stop offset="63.7%" stop-color="#ED9EFF" />
+        <stop offset="75.6%" stop-color="#88A0FF" />
+        <stop offset="88%" stop-color="#ED9EFF" />
+        <stop offset="100%" stop-color="#6E73F8" />
+      </linearGradient>
+  
+      <!-- 7. Reusable Groups & Masks -->
+      <g id="star-composite-group">
+        <!-- Star Background Path -->
+        <use href="#path-star-main" class="star-main" transform="translate(45, 45)" />
+        <!-- Vertical Accents -->
+        <use href="#path-star-vertical" class="star-vertical" />
+      </g>
+  
+      <mask id="star-alpha-mask" maskUnits="userSpaceOnUse" style="mask-type: alpha">
+        <use href="#star-composite-group" fill="white" />
+      </mask>
+    </defs>
+  
+    <!-- 8. Rendering Layers -->
+    <!-- Parent Transform based on Lottie: Scale 44.45% and Offset 80,80 -->
+    <g transform="translate(80, 80) scale(0.4445)">
+      <!-- Scale compensation from Null Layer (400%) and Parent Nesting -->
+      <g transform="translate(-180, -180) scale(4)">
+        <g transform="translate(50, 50)">
+          
+          <!-- Base Star Layer (Underneath the matte) -->
+          <use href="#star-composite-group" />
+  
+          <!-- Masked Gradient Layer (Shimmer effect) -->
+          <g mask="url(#star-alpha-mask)" class="color-matte-group">
+             <!-- Moving Gradient -->
+             <g class="shimmer-rect">
+                <rect x="0" y="-45" width="3840" height="180" fill="url(#grad-shimmer)" transform="scale(0.1)" />
+             </g>
+          </g>
+          
+        </g>
+      </g>
+    </g>
+  </svg>

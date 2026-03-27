@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>Lottie JSON 转独立 SVG 转换器</title>
+    <style>
+        body { font-family: system-ui, sans-serif; padding: 20px; background: #f5f7fa; color: #333; }
+        .container { max-width: 1000px; margin: 0 auto; background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); }
+        .header { text-align: center; margin-bottom: 20px; }
+        .upload-area { border: 2px dashed #4f46e5; padding: 40px; text-align: center; border-radius: 8px; background: #eef2ff; cursor: pointer; transition: 0.3s; }
+        .upload-area:hover { background: #e0e7ff; }
+        textarea { width: 100%; height: 300px; margin-top: 20px; font-family: monospace; font-size: 13px; padding: 10px; border: 1px solid #ccc; border-radius: 6px; background: #f9f9f9; resize: vertical; box-sizing: border-box; }
+        button { background: #4f46e5; color: white; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; font-size: 16px; margin-top: 10px; transition: 0.3s; }
+        button:hover { background: #4338ca; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div class="header">
+        <h2>🚀 Lottie JSON to Native SVG Converter</h2>
+        <p>100% 纯本地运行，将 Lottie 转化为包含 CSS @keyframes 的独立 SVG 文件</p>
+    </div>
+
+    <div class="upload-area" onclick="document.getElementById('fileInput').click()">
+        <h3>点击或拖拽 Lottie JSON 文件到此处</h3>
+        <input type="file" id="fileInput" accept=".json" style="display: none;" onchange="handleFileSelect(event)">
+    </div>
+
+    <button id="downloadBtn" style="display:none;" onclick="downloadSVG()">⬇️ 下载独立的 SVG 文件</button>
+    
+    <textarea id="output" placeholder="生成的 SVG 代码将显示在这里..." readonly></textarea>
+</div>
+
+<script>
+    let generatedSVGString = '';
+
+    function handleFileSelect(event) {
+        const file = event.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = function(e) {
+            try {
+                const lottieData = JSON.parse(e.target.result);
+                processLottieData(lottieData);
+            } catch (err) {
+                alert("JSON 解析失败，请确保文件格式正确！\n错误信息: " + err.message);
+            }
+        };
+        reader.readAsText(file);
+    }
+
+    // 核心转换引擎
+    function processLottieData(data) {
+        const fps = data.fr || 30;
+        const totalFrames = data.op - data.ip;
+        const duration = (totalFrames / fps).toFixed(2);
+        const width = data.w;
+        const height = data.h;
+
+        let cssKeyframes = `
+      /* 基础重置 */
+      g { transform-origin: 0 0; }
+      :root { --duration: ${duration}s; }
+`;
+        let svgElements = '';
+
+        // 遍历解析图层 (简单逻辑演示，实际生产需递归处理嵌套和复合遮罩)
+        const layers = data.layers.reverse(); // Lottie是倒序渲染的
+        
+        layers.forEach((layer, index) => {
+            const layerId = layer.nm.replace(/[^a-zA-Z0-9]/g, '_') + '_' + index;
+            
+            // 1. 提取 Transform 关键帧转化为 CSS
+            if (layer.ks) {
+                cssKeyframes += generateCSSKeyframes(layerId, layer.ks, totalFrames, fps);
+            }
+
+            // 2. 提取形状 (此处为最简展示，仅提取基础占位符或路径组)
+            let layerContent = '';
+            if (layer.ty === 4 && layer.shapes) {
+                // 形状图层
+                layerContent = `<g class="${layerId}"><!-- Shape Data: ${layer.nm} --></g>`;
+            } else if (layer.ty === 0) {
+                // 预合成图层
+                layerContent = `<g class="${layerId}"><!-- Precomp Data: ${layer.nm} --></g>`;
+            }
+
+            svgElements += `\n    ${layerContent}`;
+        });
+
+        // 组装最终 SVG
+        generatedSVGString = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="100%" height="100%">
+  <defs>
+    <style>
+      <![CDATA[${cssKeyframes}      ]]>
+    </style>
+  </defs>
+  
+  <!-- 渲染层 -->${svgElements}
+</svg>`;
+
+        document.getElementById('output').value = generatedSVGString;
+        document.getElementById('downloadBtn').style.display = 'inline-block';
+    }
+
+    // 关键帧到 CSS 的数学换算逻辑
+    function generateCSSKeyframes(layerId, ks, totalFrames, fps) {
+        let css = `\n      .${layerId} { animation: anim_${layerId} var(--duration) linear infinite; }\n`;
+        css += `      @keyframes anim_${layerId} {`;
+        
+        // 简化的 Position 解析示例
+        if (ks.p && ks.p.a === 1 && ks.p.k.length > 0) {
+            ks.p.k.forEach(kf => {
+                if(kf.t === undefined || !kf.s) return;
+                const percent = ((kf.t / totalFrames) * 100).toFixed(3);
+                const x = kf.s[0].toFixed(2);
+                const y = kf.s[1].toFixed(2);
+                css += `\n        ${percent}% { transform: translate(${x}px, ${y}px); }`;
+            });
+        } else if (ks.p && ks.p.a === 0) {
+            // 静态位置
+            const x = ks.p.k[0].toFixed(2);
+            const y = ks.p.k[1].toFixed(2);
+            css += `\n        0%, 100% { transform: translate(${x}px, ${y}px); }`;
+        }
+        
+        css += `\n      }\n`;
+        return css;
+    }
+
+    function downloadSVG() {
+        const blob = new Blob([generatedSVGString], { type: 'image/svg+xml' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'converted_animation.svg';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    }
+</script>
+</body>
+</html>
