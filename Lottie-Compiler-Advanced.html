@@ -869,15 +869,13 @@
         }, [0, 0]);
 
         wrapped = wrapAnimatedTransform(wrapped, 'scale', `scale_${key}`, frame => {
-            const scale = evaluateVec2(getPropertyValue(transformData.s, frame, [100, 100, 100]), [100, 100]);
-            return [scale[0] / 100, scale[1] / 100];
+            return getProjectedScaleValue(transformData, frame);
         }, [1, 1]);
 
         wrapped = wrapSkewTransform(wrapped, transformData, key);
 
         wrapped = wrapAnimatedTransform(wrapped, 'rotate', `rotate_${key}`, frame => {
-            const rotation = getScalarValue(getPropertyValue(transformData.r || transformData.rz, frame, 0), 0);
-            return rotation;
+            return getPlanarRotationValue(transformData, frame);
         }, 0);
 
         wrapped = wrapAnimatedTransform(wrapped, 'translate', `position_${key}`, frame => {
@@ -898,6 +896,22 @@
         }
 
         return wrapped;
+    }
+
+    function getProjectedScaleValue(transformData, frame) {
+        const scale = evaluateVec2(getPropertyValue(transformData.s, frame, [100, 100, 100]), [100, 100]);
+        const orientation = evaluateVec3(getPropertyValue(transformData.or, frame, [0, 0, 0]), [0, 0, 0]);
+        const rx = getScalarValue(getPropertyValue(transformData.rx, frame, 0), 0) + orientation[0];
+        const ry = getScalarValue(getPropertyValue(transformData.ry, frame, 0), 0) + orientation[1];
+        const projectedX = (scale[0] / 100) * Math.cos((ry * Math.PI) / 180);
+        const projectedY = (scale[1] / 100) * Math.cos((rx * Math.PI) / 180);
+        return [projectedX, projectedY];
+    }
+
+    function getPlanarRotationValue(transformData, frame) {
+        const orientation = evaluateVec3(getPropertyValue(transformData.or, frame, [0, 0, 0]), [0, 0, 0]);
+        const baseRotation = getScalarValue(getPropertyValue(transformData.r || transformData.rz, frame, 0), 0);
+        return baseRotation + orientation[2];
     }
 
     function wrapSkewTransform(innerHTML, transformData, key) {
@@ -954,9 +968,10 @@
                 continue;
             }
 
-            let geometry = '';
+            let geometry = null;
             if (item.ty === 'gr') {
-                geometry = renderShapeItems(item.it || [], `${scope}_gr_${index}`);
+                const markup = renderShapeItems(item.it || [], `${scope}_gr_${index}`);
+                geometry = markup ? { type: 'markup', markup } : null;
             } else {
                 geometry = renderShapeGeometry(item, `${scope}_shape_${index}`);
             }
@@ -979,10 +994,7 @@
 
     function createShapeStyleState() {
         return {
-            fillItem: null,
-            gradientFillItem: null,
-            strokeItem: null,
-            gradientStrokeItem: null
+            paintItems: []
         };
     }
 
@@ -991,57 +1003,137 @@
     }
 
     function assignShapeStyle(styleState, item) {
-        if (item.ty === 'fl' && !styleState.fillItem) {
-            styleState.fillItem = item;
-            return;
-        }
-
-        if (item.ty === 'gf' && !styleState.gradientFillItem) {
-            styleState.gradientFillItem = item;
-            return;
-        }
-
-        if (item.ty === 'st' && !styleState.strokeItem) {
-            styleState.strokeItem = item;
-            return;
-        }
-
-        if (item.ty === 'gs' && !styleState.gradientStrokeItem) {
-            styleState.gradientStrokeItem = item;
-        }
+        styleState.paintItems.push(item);
     }
 
     function renderShapeSegment(geometries, styleState, key) {
-        let markup = geometries.join('\n');
+        let markup = renderShapeEntries(
+            geometries,
+            `${key}_entries`,
+            styleState.paintItems.some(isFillPaintItem)
+        );
         if (!markup) return '';
 
-        if (styleState.fillItem || styleState.gradientFillItem || styleState.strokeItem || styleState.gradientStrokeItem) {
-            markup = applyPaintWrappers(
+        const paintPasses = buildPaintPasses(styleState.paintItems);
+        if (!paintPasses.length) return markup;
+
+        return paintPasses.map((paintItem, index) => {
+            return applyPaintWrappers(
                 markup,
-                styleState.fillItem,
-                styleState.gradientFillItem,
-                styleState.strokeItem,
-                styleState.gradientStrokeItem,
-                key
+                paintItem.ty === 'fl' ? paintItem : null,
+                paintItem.ty === 'gf' ? paintItem : null,
+                paintItem.ty === 'st' ? paintItem : null,
+                paintItem.ty === 'gs' ? paintItem : null,
+                `${key}_paint_${index}`
             );
+        }).join('\n');
+    }
+
+    function isFillPaintItem(item) {
+        return item && ['fl', 'gf'].includes(item.ty);
+    }
+
+    function isStrokePaintItem(item) {
+        return item && ['st', 'gs'].includes(item.ty);
+    }
+
+    function buildPaintPasses(paintItems) {
+        const fills = paintItems.filter(isFillPaintItem);
+        const strokes = paintItems.filter(isStrokePaintItem);
+        return fills.concat(strokes);
+    }
+
+    function renderShapeEntries(entries, key, combineGeometryForFill) {
+        const markup = [];
+        let geometryRun = [];
+
+        function flushGeometryRun() {
+            if (!geometryRun.length) return;
+
+            const runKey = `${key}_run_${markup.length}`;
+            if (combineGeometryForFill && canCombineGeometryRun(geometryRun)) {
+                const combinedMarkup = renderCombinedGeometryRun(geometryRun, runKey);
+                if (combinedMarkup) markup.push(combinedMarkup);
+            } else {
+                geometryRun.forEach((entry, index) => {
+                    const entryMarkup = renderGeometryEntry(entry, `${runKey}_${index}`);
+                    if (entryMarkup) markup.push(entryMarkup);
+                });
+            }
+
+            geometryRun = [];
         }
 
-        return markup;
+        entries.forEach(entry => {
+            if (!entry) return;
+
+            if (entry.type === 'geometry') {
+                geometryRun.push(entry);
+                return;
+            }
+
+            flushGeometryRun();
+            if (entry.type === 'markup' && entry.markup) {
+                markup.push(entry.markup);
+            }
+        });
+
+        flushGeometryRun();
+        return markup.join('\n');
     }
 
     function renderShapeGeometry(shape, scope) {
-        if (!['sh', 'rc', 'el', 'sr'].includes(shape.ty)) return '';
+        if (!['sh', 'rc', 'el', 'sr'].includes(shape.ty)) return null;
 
         const dValues = globalSampleFrames.map(frame => {
             return shapeGeometryToD(shape, frame);
         });
         const firstD = dValues[0] || '';
+        if (!firstD) return null;
+
+        return {
+            type: 'geometry',
+            dValues,
+            isAnimated: !allValuesEqual(dValues),
+            supportsAnimatedD: canAnimateGeometry(shape)
+        };
+    }
+
+    function canCombineGeometryRun(entries) {
+        return entries.every(entry => entry && entry.type === 'geometry' && (!entry.isAnimated || entry.supportsAnimatedD));
+    }
+
+    function renderGeometryEntry(entry, key) {
+        if (!entry || entry.type !== 'geometry') return '';
+
+        const pathId = getUID('path');
+        let animateD = '';
+        if (entry.isAnimated && entry.supportsAnimatedD) {
+            animateD = buildAnimateElement('d', entry.dValues, {
+                id: `${pathId}_d`,
+                extraAttributes: ' additive="replace"'
+            });
+        }
+
+        return `<path d="${entry.dValues[0]}" id="${pathId}">${animateD}</path>`;
+    }
+
+    function renderCombinedGeometryRun(entries, key) {
+        if (!entries.length) return '';
+
+        const combinedDValues = globalSampleFrames.map((_, frameIndex) => {
+            return entries
+                .map(entry => entry.dValues[frameIndex] || '')
+                .filter(Boolean)
+                .join(' ');
+        });
+        const firstD = combinedDValues[0] || '';
         if (!firstD) return '';
 
         const pathId = getUID('path');
         let animateD = '';
-        if (!allValuesEqual(dValues) && canAnimateGeometry(shape)) {
-            animateD = buildAnimateElement('d', dValues, {
+        if (!allValuesEqual(combinedDValues)) {
+            animateD = buildAnimateElement('d', combinedDValues, {
                 id: `${pathId}_d`,
                 extraAttributes: ' additive="replace"'
             });
@@ -1097,6 +1189,7 @@
     function applyPaintWrappers(innerHTML, fillItem, gradientItem, strokeItem, gradientStrokeItem, key) {
         const attrs = [];
         let animations = '';
+        const activeFillItem = gradientItem || fillItem;
 
         if (gradientItem) {
             attrs.push(`fill="url(#${createGradientDef(gradientItem, key)})"`);
@@ -1108,13 +1201,13 @@
                     id: `${key}_fill`
                 });
             }
-            attrs.push(`fill-rule="${mapFillRule(fillItem.r)}"`);
         } else if (strokeItem || gradientStrokeItem) {
             attrs.push('fill="none"');
         }
 
-        if (fillItem) {
-            const fillOpacity = globalSampleFrames.map(frame => formatNumber(clamp(getScalarValue(getPropertyValue(fillItem.o, frame, 100), 100) / 100, 0, 1)));
+        if (activeFillItem) {
+            attrs.push(`fill-rule="${mapFillRule(activeFillItem.r)}"`);
+            const fillOpacity = globalSampleFrames.map(frame => formatNumber(clamp(getScalarValue(getPropertyValue(activeFillItem.o, frame, 100), 100) / 100, 0, 1)));
             attrs.push(`fill-opacity="${fillOpacity[0]}"`);
             if (!allValuesEqual(fillOpacity)) {
                 animations += buildAnimateElement('fill-opacity', fillOpacity, {
@@ -1313,6 +1406,17 @@
         const x = getScalarValue(getPropertyValue(transformData.px, frame, 0), 0);
         const y = getScalarValue(getPropertyValue(transformData.py, frame, 0), 0);
         return [x, y];
+    }
+
+    function evaluateVec3(value, fallback = [0, 0, 0]) {
+        if (Array.isArray(value)) {
+            return [
+                Number(value[0] ?? fallback[0]),
+                Number(value[1] ?? fallback[1]),
+                Number(value[2] ?? fallback[2])
+            ];
+        }
+        return [fallback[0], fallback[1], fallback[2]];
     }
 
     function getPropertyValue(prop, frame, fallback) {
