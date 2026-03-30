@@ -433,7 +433,10 @@
     let globalFrameCount = 1;
     let globalSampleFrames = [0, 1];
     let globalKeyTimes = '0;1';
+    let globalKeyTimeValues = ['0', '1'];
+    let globalKeyTimeNumbers = [0, 1];
     let defsHTML = '';
+    let globalGradientCache = new Map();
     let idCounter = 0;
     let currentLottieInstance = null;
     let globalFeatureReport = createEmptyFeatureReport();
@@ -690,10 +693,13 @@
             globalAssets[asset.id] = asset;
         });
         globalSampleFrames = buildSampleFrames(data);
-        globalKeyTimes = globalSampleFrames.map(frame => {
-            return formatNumber((frame - globalFrameStart) / globalFrameCount);
-        }).join(';');
+        globalKeyTimeNumbers = globalSampleFrames.map(frame => {
+            return (frame - globalFrameStart) / globalFrameCount;
+        });
+        globalKeyTimeValues = globalKeyTimeNumbers.map(value => formatNumber(value));
+        globalKeyTimes = globalKeyTimeValues.join(';');
         defsHTML = '';
+        globalGradientCache = new Map();
 
         const bodyHTML = renderComposition(data);
         const finalSVG = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 ${data.w || 0} ${data.h || 0}" width="100%" height="100%">
@@ -1254,27 +1260,50 @@
     }
 
     function createGradientDef(item, key) {
-        const gradientId = getUID('grad');
         const stopCount = item.g && typeof item.g.p === 'number' ? item.g.p : 0;
         const firstState = parseGradientState(getPropertyValue(item.g && item.g.k, globalSampleFrames[0], []), stopCount);
-        const x1Values = globalSampleFrames.map(frame => formatNumber(evaluateVec2(getPropertyValue(item.s, frame, [0, 0]))[0]));
-        const y1Values = globalSampleFrames.map(frame => formatNumber(evaluateVec2(getPropertyValue(item.s, frame, [0, 0]))[1]));
-        const x2Values = globalSampleFrames.map(frame => formatNumber(evaluateVec2(getPropertyValue(item.e, frame, [0, 0]))[0]));
-        const y2Values = globalSampleFrames.map(frame => formatNumber(evaluateVec2(getPropertyValue(item.e, frame, [0, 0]))[1]));
+        const x1Values = globalSampleFrames.map(frame => evaluateVec2(getPropertyValue(item.s, frame, [0, 0]))[0]);
+        const y1Values = globalSampleFrames.map(frame => evaluateVec2(getPropertyValue(item.s, frame, [0, 0]))[1]);
+        const x2Values = globalSampleFrames.map(frame => evaluateVec2(getPropertyValue(item.e, frame, [0, 0]))[0]);
+        const y2Values = globalSampleFrames.map(frame => evaluateVec2(getPropertyValue(item.e, frame, [0, 0]))[1]);
 
-        let gradientHTML = `\n<linearGradient id="${gradientId}" gradientUnits="userSpaceOnUse" x1="${x1Values[0]}" y1="${y1Values[0]}" x2="${x2Values[0]}" y2="${y2Values[0]}">`;
+        const stopAnimationValues = firstState.stops.map((_, index) => {
+            return {
+                offsetValues: globalSampleFrames.map(frame => parseGradientState(getPropertyValue(item.g && item.g.k, frame, []), stopCount).stops[index].offset),
+                colorValues: globalSampleFrames.map(frame => parseGradientState(getPropertyValue(item.g && item.g.k, frame, []), stopCount).stops[index].color),
+                opacityValues: globalSampleFrames.map(frame => parseGradientState(getPropertyValue(item.g && item.g.k, frame, []), stopCount).stops[index].opacity)
+            };
+        });
+
+        const gradientSignature = JSON.stringify({
+            stopCount,
+            x1Values: x1Values.map(formatNumber),
+            y1Values: y1Values.map(formatNumber),
+            x2Values: x2Values.map(formatNumber),
+            y2Values: y2Values.map(formatNumber),
+            stops: stopAnimationValues.map(stop => ({
+                offsetValues: stop.offsetValues.map(formatNumber),
+                colorValues: stop.colorValues,
+                opacityValues: stop.opacityValues.map(formatNumber)
+            }))
+        });
+        if (globalGradientCache.has(gradientSignature)) {
+            return globalGradientCache.get(gradientSignature);
+        }
+
+        const gradientId = getUID('grad');
+
+        let gradientHTML = `\n<linearGradient id="${gradientId}" gradientUnits="userSpaceOnUse" x1="${formatNumber(x1Values[0])}" y1="${formatNumber(y1Values[0])}" x2="${formatNumber(x2Values[0])}" y2="${formatNumber(y2Values[0])}">`;
         if (!allValuesEqual(x1Values)) gradientHTML += buildAnimateElement('x1', x1Values, { id: `${key}_x1` });
         if (!allValuesEqual(y1Values)) gradientHTML += buildAnimateElement('y1', y1Values, { id: `${key}_y1` });
         if (!allValuesEqual(x2Values)) gradientHTML += buildAnimateElement('x2', x2Values, { id: `${key}_x2` });
         if (!allValuesEqual(y2Values)) gradientHTML += buildAnimateElement('y2', y2Values, { id: `${key}_y2` });
 
         for (let index = 0; index < firstState.stops.length; index++) {
-            const offsetValues = globalSampleFrames.map(frame => formatNumber(parseGradientState(getPropertyValue(item.g && item.g.k, frame, []), stopCount).stops[index].offset));
-            const colorValues = globalSampleFrames.map(frame => parseGradientState(getPropertyValue(item.g && item.g.k, frame, []), stopCount).stops[index].color);
-            const opacityValues = globalSampleFrames.map(frame => formatNumber(parseGradientState(getPropertyValue(item.g && item.g.k, frame, []), stopCount).stops[index].opacity));
+            const { offsetValues, colorValues, opacityValues } = stopAnimationValues[index];
 
-            gradientHTML += `\n  <stop offset="${offsetValues[0]}%" stop-color="${colorValues[0]}" stop-opacity="${opacityValues[0]}">`;
-            if (!allValuesEqual(offsetValues)) gradientHTML += buildAnimateElement('offset', offsetValues.map(value => `${value}%`), { id: `${key}_offset_${index}` });
+            gradientHTML += `\n  <stop offset="${formatNumber(offsetValues[0])}%" stop-color="${colorValues[0]}" stop-opacity="${formatNumber(opacityValues[0])}">`;
+            if (!allValuesEqual(offsetValues)) gradientHTML += buildAnimateElement('offset', offsetValues, { id: `${key}_offset_${index}`, formatter: value => `${formatNumber(value)}%`, tolerance: 0.05 });
             if (!allValuesEqual(colorValues)) gradientHTML += buildAnimateElement('stop-color', colorValues, { id: `${key}_color_${index}` });
             if (!allValuesEqual(opacityValues)) gradientHTML += buildAnimateElement('stop-opacity', opacityValues, { id: `${key}_opacity_${index}` });
             gradientHTML += '</stop>';
@@ -1282,6 +1311,7 @@
 
         gradientHTML += '\n</linearGradient>';
         defsHTML += gradientHTML;
+        globalGradientCache.set(gradientSignature, gradientId);
         return gradientId;
     }
 
@@ -1372,7 +1402,7 @@
         }
 
         const transformAttr = ` transform="${type}(${stringValues[0]})"`;
-        const animateHTML = allValuesEqual(stringValues) ? '' : buildAnimateTransformElement(type, stringValues, key);
+        const animateHTML = allValuesEqual(stringValues) ? '' : buildAnimateTransformElement(type, sampledValues, key);
         return `<g${transformAttr}>${animateHTML}${innerHTML}</g>`;
     }
 
@@ -1384,18 +1414,187 @@
         }
 
         const attr = ` ${attributeName}="${stringValues[0]}"`;
-        const animateHTML = allValuesEqual(stringValues) ? '' : buildAnimateElement(attributeName, stringValues, { id: key });
+        const animateHTML = allValuesEqual(stringValues) ? '' : buildAnimateElement(attributeName, sampledValues, { id: key });
         return `<g${attr}>${animateHTML}${innerHTML}</g>`;
     }
 
     function buildAnimateTransformElement(type, values, key) {
-        return `<animateTransform id="${key}" attributeName="transform" type="${type}" dur="${globalDuration}s" repeatCount="indefinite" calcMode="linear" keyTimes="${globalKeyTimes}" values="${values.join(';')}" />`;
+        const optimized = optimizeAnimationSamples(values, {
+            formatter: value => formatTransformValue(type, value),
+            tolerance: getTransformAnimationTolerance(type)
+        });
+        return `<animateTransform id="${key}" attributeName="transform" type="${type}" dur="${globalDuration}s" repeatCount="indefinite" calcMode="linear" keyTimes="${optimized.keyTimes}" values="${optimized.values.join(';')}" />`;
     }
 
     function buildAnimateElement(attributeName, values, options = {}) {
         const idAttr = options.id ? ` id="${options.id}"` : '';
         const extra = options.extraAttributes || '';
-        return `<animate${idAttr} attributeName="${attributeName}" dur="${globalDuration}s" repeatCount="indefinite" calcMode="linear" keyTimes="${globalKeyTimes}" values="${values.join(';')}"${extra} />`;
+        const optimized = optimizeAnimationSamples(values, {
+            attributeName,
+            formatter: options.formatter || formatAttributeValue,
+            tolerance: options.tolerance,
+            toComparable: options.toComparable,
+            signatureExtractor: options.signatureExtractor
+        });
+        return `<animate${idAttr} attributeName="${attributeName}" dur="${globalDuration}s" repeatCount="indefinite" calcMode="linear" keyTimes="${optimized.keyTimes}" values="${optimized.values.join(';')}"${extra} />`;
+    }
+
+    function optimizeAnimationSamples(values, options = {}) {
+        if (!Array.isArray(values) || !values.length) {
+            return { keyTimes: globalKeyTimes, values: [] };
+        }
+
+        const formatter = options.formatter || formatAttributeValue;
+        const comparable = buildComparableSamples(values, options);
+        const keepIndices = comparable
+            ? reduceInterpolableSamples(comparable, options.tolerance ?? getAnimationTolerance(options.attributeName))
+            : reduceDiscreteSamples(values);
+
+        return {
+            keyTimes: keepIndices.map(index => globalKeyTimeValues[index] || formatNumber(globalKeyTimeNumbers[index] || 0)).join(';'),
+            values: keepIndices.map(index => formatter(values[index]))
+        };
+    }
+
+    function buildComparableSamples(values, options = {}) {
+        const explicitComparable = typeof options.toComparable === 'function'
+            ? values.map(value => options.toComparable(value))
+            : inferComparableSamples(values, options.attributeName);
+
+        if (!explicitComparable || explicitComparable.some(value => value == null)) return null;
+
+        if (typeof options.signatureExtractor === 'function') {
+            const signatures = values.map(value => options.signatureExtractor(value));
+            if (signatures.some(signature => signature == null || signature !== signatures[0])) return null;
+        }
+
+        return explicitComparable;
+    }
+
+    function inferComparableSamples(values, attributeName) {
+        if (attributeName === 'd') {
+            const signatures = values.map(extractPathSignature);
+            if (signatures.some(signature => !signature || signature !== signatures[0])) return null;
+            return values.map(parsePathComparable);
+        }
+
+        if (['fill', 'stroke', 'stop-color'].includes(attributeName)) {
+            const colors = values.map(parseRGBComparable);
+            return colors.some(value => value == null) ? null : colors;
+        }
+
+        return values.map(parseNumericComparable);
+    }
+
+    function reduceDiscreteSamples(values) {
+        if (values.length <= 2) return values.map((_, index) => index);
+        const keep = [0];
+        for (let index = 1; index < values.length - 1; index++) {
+            if (!(values[index] === values[index - 1] && values[index] === values[index + 1])) {
+                keep.push(index);
+            }
+        }
+        keep.push(values.length - 1);
+        return keep;
+    }
+
+    function reduceInterpolableSamples(values, tolerance) {
+        if (!Array.isArray(values) || values.length <= 2) return values.map((_, index) => index);
+
+        const keep = new Set([0, values.length - 1]);
+
+        function decimate(start, end) {
+            if (end - start <= 1) return;
+
+            const startTime = globalKeyTimeNumbers[start];
+            const endTime = globalKeyTimeNumbers[end];
+            if (!Number.isFinite(startTime) || !Number.isFinite(endTime) || Math.abs(endTime - startTime) < 0.000001) {
+                for (let index = start + 1; index < end; index++) keep.add(index);
+                return;
+            }
+
+            let maxError = -1;
+            let maxIndex = -1;
+
+            for (let index = start + 1; index < end; index++) {
+                const progress = clamp((globalKeyTimeNumbers[index] - startTime) / (endTime - startTime), 0, 1);
+                const expected = interpolateValue(values[start], values[end], progress);
+                const error = measureComparableDistance(values[index], expected);
+                if (error > maxError) {
+                    maxError = error;
+                    maxIndex = index;
+                }
+            }
+
+            if (maxError > tolerance && maxIndex !== -1) {
+                keep.add(maxIndex);
+                decimate(start, maxIndex);
+                decimate(maxIndex, end);
+            }
+        }
+
+        decimate(0, values.length - 1);
+        return Array.from(keep).sort((left, right) => left - right);
+    }
+
+    function getTransformAnimationTolerance(type) {
+        if (type === 'translate') return 0.05;
+        if (type === 'rotate' || type === 'skewX') return 0.05;
+        if (type === 'scale') return 0.0005;
+        return 0.02;
+    }
+
+    function getAnimationTolerance(attributeName) {
+        if (attributeName === 'd') return 0.15;
+        if (['fill', 'stroke', 'stop-color'].includes(attributeName)) return 1;
+        if (attributeName && attributeName.includes('opacity')) return 0.002;
+        if (attributeName === 'offset') return 0.05;
+        return 0.02;
+    }
+
+    function parseNumericComparable(value) {
+        if (typeof value === 'number') return value;
+        if (Array.isArray(value)) {
+            const parsed = value.map(entry => parseNumericComparable(entry));
+            return parsed.some(entry => entry == null) ? null : parsed;
+        }
+        if (typeof value === 'string' && /^-?\d*\.?\d+(e[-+]?\d+)?$/i.test(value.trim())) {
+            return Number(value);
+        }
+        return null;
+    }
+
+    function parseRGBComparable(value) {
+        if (typeof value !== 'string') return null;
+        const match = value.match(/rgb\(\s*([-\d.]+)\s*,\s*([-\d.]+)\s*,\s*([-\d.]+)\s*\)/i);
+        if (!match) return null;
+        return [Number(match[1]), Number(match[2]), Number(match[3])];
+    }
+
+    function extractPathSignature(value) {
+        if (typeof value !== 'string') return null;
+        return value.replace(/-?\d*\.?\d+(e[-+]?\d+)?/gi, '#');
+    }
+
+    function parsePathComparable(value) {
+        if (typeof value !== 'string') return null;
+        const matches = value.match(/-?\d*\.?\d+(e[-+]?\d+)?/gi);
+        if (!matches) return [];
+        return matches.map(Number);
+    }
+
+    function measureComparableDistance(left, right) {
+        if (typeof left === 'number' && typeof right === 'number') {
+            return Math.abs(left - right);
+        }
+        if (Array.isArray(left) && Array.isArray(right) && left.length === right.length) {
+            let maxDistance = 0;
+            for (let index = 0; index < left.length; index++) {
+                maxDistance = Math.max(maxDistance, measureComparableDistance(left[index], right[index]));
+            }
+            return maxDistance;
+        }
+        return Number.POSITIVE_INFINITY;
     }
 
     function getPositionValue(transformData, frame) {
@@ -1688,7 +1887,7 @@
     }
 
     function formatNumber(value) {
-        return Number(value).toFixed(4).replace(/\.?0+$/, '');
+        return Number(value).toFixed(3).replace(/\.?0+$/, '');
     }
 
     function asBezierScalar(value, fallback) {
