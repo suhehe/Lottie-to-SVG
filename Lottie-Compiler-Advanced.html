@@ -1137,9 +1137,14 @@
 
         collectAnimatedTimes(data, frameTimes, new Set());
 
+        return normalizeFrameTimes(frameTimes);
+    }
+
+    function normalizeFrameTimes(frameTimes, extraFrames = []) {
         const rangeStart = globalFrameStart;
         const rangeEnd = globalFrameStart + globalFrameCount;
         const normalized = frameTimes
+            .concat(extraFrames)
             .map(value => Number(value))
             .filter(value => Number.isFinite(value) && value >= rangeStart && value <= rangeEnd)
             .sort((left, right) => left - right);
@@ -1154,6 +1159,115 @@
         if (!unique.length || Math.abs(unique[0] - rangeStart) > 0.0001) unique.unshift(rangeStart);
         if (Math.abs(unique[unique.length - 1] - rangeEnd) > 0.0001) unique.push(rangeEnd);
         return unique;
+    }
+
+    function normalizeAnimationSources(sources) {
+        if (!Array.isArray(sources)) return sources ? [sources] : [];
+        const flattened = [];
+
+        sources.forEach(source => {
+            if (Array.isArray(source)) {
+                source.forEach(entry => {
+                    if (entry) flattened.push(entry);
+                });
+                return;
+            }
+            if (source) flattened.push(source);
+        });
+
+        return flattened;
+    }
+
+    function buildLocalSampleFrames(sources, extraFrames = []) {
+        const frameTimes = [globalFrameStart, globalFrameStart + globalFrameCount];
+        const visited = new Set();
+        normalizeAnimationSources(sources).forEach(source => {
+            collectAnimatedTimes(source, frameTimes, visited);
+        });
+        return normalizeFrameTimes(frameTimes, extraFrames);
+    }
+
+    function sampleAnimationValues(sampler, options = {}) {
+        const sampleFrames = buildLocalSampleFrames(options.sources, options.extraFrames);
+        const cache = new Map();
+        const getSampleValue = frame => {
+            const cacheKey = frame.toFixed(4);
+            if (!cache.has(cacheKey)) cache.set(cacheKey, sampler(frame));
+            return cache.get(cacheKey);
+        };
+
+        const refinedFrames = options.enableAdaptive === false
+            ? sampleFrames
+            : refineSampleFrames(sampleFrames, getSampleValue, options);
+
+        return {
+            sampleFrames: refinedFrames,
+            values: refinedFrames.map(frame => getSampleValue(frame))
+        };
+    }
+
+    function refineSampleFrames(sampleFrames, getValue, options = {}) {
+        if (!Array.isArray(sampleFrames) || sampleFrames.length <= 2) return sampleFrames;
+
+        const minFrameStep = options.minFrameStep ?? 0.25;
+        const maxDepth = options.maxDepth ?? 7;
+        const keep = new Set(sampleFrames);
+
+        function decimate(startFrame, endFrame, depth) {
+            if (depth <= 0 || Math.abs(endFrame - startFrame) <= minFrameStep) return;
+
+            const midFrame = (startFrame + endFrame) / 2;
+            if (Math.abs(midFrame - startFrame) <= minFrameStep || Math.abs(endFrame - midFrame) <= minFrameStep) return;
+
+            const startValue = getValue(startFrame);
+            const midValue = getValue(midFrame);
+            const endValue = getValue(endFrame);
+
+            if (!areSampleSignaturesCompatible([startValue, midValue, endValue], options)) return;
+
+            const startComparable = toComparableSample(startValue, options);
+            const midComparable = toComparableSample(midValue, options);
+            const endComparable = toComparableSample(endValue, options);
+            if (startComparable == null || midComparable == null || endComparable == null) return;
+
+            const expectedMid = interpolateValue(startComparable, endComparable, 0.5);
+            const error = measureComparableDistance(midComparable, expectedMid);
+            const tolerance = options.tolerance ?? getAnimationTolerance(options.attributeName);
+
+            if (error > tolerance) {
+                keep.add(midFrame);
+                decimate(startFrame, midFrame, depth - 1);
+                decimate(midFrame, endFrame, depth - 1);
+            }
+        }
+
+        for (let index = 0; index < sampleFrames.length - 1; index++) {
+            decimate(sampleFrames[index], sampleFrames[index + 1], maxDepth);
+        }
+
+        return normalizeFrameTimes(Array.from(keep));
+    }
+
+    function areSampleSignaturesCompatible(values, options = {}) {
+        if (typeof options.signatureExtractor !== 'function') return true;
+        const signatures = values.map(value => options.signatureExtractor(value));
+        return signatures.every(signature => signature != null && signature === signatures[0]);
+    }
+
+    function toComparableSample(value, options = {}) {
+        if (typeof options.toComparable === 'function') return options.toComparable(value);
+
+        if (options.attributeName === 'd') return parsePathComparable(value);
+        if (['fill', 'stroke', 'stop-color'].includes(options.attributeName)) return parseRGBComparable(value);
+
+        return parseNumericComparable(value);
+    }
+
+    function getKeyTimeValues(sampleFrames) {
+        const frames = Array.isArray(sampleFrames) && sampleFrames.length
+            ? sampleFrames
+            : [globalFrameStart, globalFrameStart + globalFrameCount];
+        return frames.map(frame => formatNumber((frame - globalFrameStart) / globalFrameCount));
     }
 
     function collectAnimatedTimes(value, frameTimes, visited) {
@@ -1282,37 +1396,74 @@
 
     function applyTransformWrappers(transformData, innerHTML, key, options = {}) {
         let wrapped = innerHTML;
+        const staticOrientation = evaluateVec3(getPropertyValue(transformData.or, globalFrameStart, [0, 0, 0]), [0, 0, 0]);
+        const hasAnimatedOrientation = isAnimatedProperty(transformData.or) || isAnimatedProperty(transformData.rx) || isAnimatedProperty(transformData.ry);
+        const rotationProp = transformData.r || transformData.rz;
 
         wrapped = wrapAnimatedTransform(wrapped, 'translate', `anchor_${key}`, frame => {
             const anchor = evaluateVec2(getPropertyValue(transformData.a, frame, [0, 0, 0]));
             return [-anchor[0], -anchor[1]];
-        }, [0, 0]);
+        }, [0, 0], {
+            sources: [transformData.a],
+            directKeyframeProp: transformData.a,
+            mapValue: value => {
+                const anchor = evaluateVec2(value, [0, 0]);
+                return [-anchor[0], -anchor[1]];
+            }
+        });
 
         wrapped = wrapAnimatedTransform(wrapped, 'scale', `scale_${key}`, frame => {
             return getProjectedScaleValue(transformData, frame);
-        }, [1, 1]);
+        }, [1, 1], {
+            sources: [transformData.s, transformData.or, transformData.rx, transformData.ry],
+            directKeyframeProp: !hasAnimatedOrientation ? transformData.s : null,
+            mapValue: value => {
+                const scale = evaluateVec2(value, [100, 100]);
+                return [
+                    (scale[0] / 100) * Math.cos((staticOrientation[1] * Math.PI) / 180),
+                    (scale[1] / 100) * Math.cos((staticOrientation[0] * Math.PI) / 180)
+                ];
+            }
+        });
 
         wrapped = wrapSkewTransform(wrapped, transformData, key);
 
         wrapped = wrapAnimatedTransform(wrapped, 'rotate', `rotate_${key}`, frame => {
             return getPlanarRotationValue(transformData, frame);
-        }, 0);
+        }, 0, {
+            sources: [transformData.r, transformData.rz, transformData.or],
+            directKeyframeProp: !isAnimatedProperty(transformData.or) ? rotationProp : null,
+            mapValue: value => getScalarValue(value, 0) + staticOrientation[2]
+        });
 
         wrapped = wrapAnimatedTransform(wrapped, 'translate', `position_${key}`, frame => {
             return getPositionValue(transformData, frame);
-        }, [0, 0]);
+        }, [0, 0], {
+            sources: [transformData.p, transformData.px, transformData.py],
+            directKeyframeProp: canDirectMapPosition(transformData) ? transformData.p : null,
+            mapValue: value => evaluateVec2(value, [0, 0]),
+            disallowSpatial: true
+        });
 
         if (options.includeOpacity) {
             wrapped = wrapAnimatedAttribute(wrapped, 'opacity', `opacity_${key}`, frame => {
                 const opacity = getScalarValue(getPropertyValue(transformData.o, frame, 100), 100) / 100;
                 return clamp(opacity, 0, 1);
-            }, 1);
+            }, 1, {
+                sources: [transformData.o],
+                directKeyframeProp: transformData.o,
+                mapValue: value => clamp(getScalarValue(value, 100) / 100, 0, 1)
+            });
         }
 
         if (options.includeWindow && options.layer) {
             wrapped = wrapAnimatedAttribute(wrapped, 'opacity', `window_${key}`, frame => {
                 return frame >= (options.layer.ip || 0) && frame < (options.layer.op || globalFrameStart + globalFrameCount) ? 1 : 0;
-            }, 1);
+            }, 1, {
+                extraFrames: [options.layer.ip || 0, options.layer.op || (globalFrameStart + globalFrameCount)],
+                enableAdaptive: false,
+                calcMode: 'discrete'
+            });
         }
 
         return wrapped;
@@ -1335,22 +1486,34 @@
     }
 
     function wrapSkewTransform(innerHTML, transformData, key) {
-        const initialSkew = getScalarValue(getPropertyValue(transformData.sk, globalSampleFrames[0], 0), 0);
+        const initialSkew = getScalarValue(getPropertyValue(transformData.sk, globalFrameStart, 0), 0);
         const skewAnimated = transformData && transformData.sk && transformData.sk.a === 1;
         if (!skewAnimated && Math.abs(initialSkew) < 0.0001) return innerHTML;
 
         let wrapped = innerHTML;
         wrapped = wrapAnimatedTransform(wrapped, 'rotate', `skew_axis_in_${key}`, frame => {
             return getScalarValue(getPropertyValue(transformData.sa, frame, 0), 0);
-        }, 0);
+        }, 0, {
+            sources: [transformData.sa],
+            directKeyframeProp: transformData.sa,
+            mapValue: value => getScalarValue(value, 0)
+        });
 
         wrapped = wrapAnimatedTransform(wrapped, 'skewX', `skew_value_${key}`, frame => {
             return getScalarValue(getPropertyValue(transformData.sk, frame, 0), 0);
-        }, 0);
+        }, 0, {
+            sources: [transformData.sk],
+            directKeyframeProp: transformData.sk,
+            mapValue: value => getScalarValue(value, 0)
+        });
 
         wrapped = wrapAnimatedTransform(wrapped, 'rotate', `skew_axis_out_${key}`, frame => {
             return -getScalarValue(getPropertyValue(transformData.sa, frame, 0), 0);
-        }, 0);
+        }, 0, {
+            sources: [transformData.sa],
+            directKeyframeProp: transformData.sa,
+            mapValue: value => -getScalarValue(value, 0)
+        });
 
         return wrapped;
     }
@@ -1505,17 +1668,25 @@
     function renderShapeGeometry(shape, scope) {
         if (!['sh', 'rc', 'el', 'sr'].includes(shape.ty)) return null;
 
-        const dValues = globalSampleFrames.map(frame => {
+        const sampledGeometry = sampleAnimationValues(frame => {
             return shapeGeometryToD(shape, frame);
+        }, {
+            attributeName: 'd',
+            sources: [shape],
+            signatureExtractor: extractPathSignature
         });
+        const dValues = sampledGeometry.values;
         const firstD = dValues[0] || '';
         if (!firstD) return null;
 
         return {
             type: 'geometry',
+            shape,
+            sampleFrames: sampledGeometry.sampleFrames,
             dValues,
             isAnimated: !allValuesEqual(dValues),
-            supportsAnimatedD: canAnimateGeometry(shape)
+            supportsAnimatedD: canAnimateGeometry(shape),
+            sample: frame => shapeGeometryToD(shape, frame)
         };
     }
 
@@ -1531,7 +1702,9 @@
         if (entry.isAnimated && entry.supportsAnimatedD) {
             animateD = buildAnimateElement('d', entry.dValues, {
                 id: `${pathId}_d`,
-                extraAttributes: ' additive="replace"'
+                extraAttributes: ' additive="replace"',
+                sampleFrames: entry.sampleFrames,
+                signatureExtractor: extractPathSignature
             });
         }
 
@@ -1541,9 +1714,10 @@
     function renderCombinedGeometryRun(entries, key) {
         if (!entries.length) return '';
 
-        const combinedDValues = globalSampleFrames.map((_, frameIndex) => {
+        const combinedSampleFrames = normalizeFrameTimes(entries.flatMap(entry => entry.sampleFrames || []));
+        const combinedDValues = combinedSampleFrames.map(frame => {
             return entries
-                .map(entry => entry.dValues[frameIndex] || '')
+                .map(entry => entry.sample ? entry.sample(frame) : '')
                 .filter(Boolean)
                 .join(' ');
         });
@@ -1555,7 +1729,9 @@
         if (!allValuesEqual(combinedDValues)) {
             animateD = buildAnimateElement('d', combinedDValues, {
                 id: `${pathId}_d`,
-                extraAttributes: ' additive="replace"'
+                extraAttributes: ' additive="replace"',
+                sampleFrames: combinedSampleFrames,
+                signatureExtractor: extractPathSignature
             });
         }
 
@@ -1614,11 +1790,19 @@
         if (gradientItem) {
             attrs.push(`fill="url(#${createGradientDef(gradientItem, key)})"`);
         } else if (fillItem) {
-            const fillValues = globalSampleFrames.map(frame => colorToRGB(getPropertyValue(fillItem.c, frame, [0, 0, 0])));
+            const fillAnimation = sampleAnimationValues(frame => colorToRGB(getPropertyValue(fillItem.c, frame, [0, 0, 0])), {
+                attributeName: 'fill',
+                sources: [fillItem.c],
+                enableAdaptive: false
+            });
+            const fillValues = fillAnimation.values;
             attrs.push(`fill="${fillValues[0]}"`);
             if (!allValuesEqual(fillValues)) {
                 animations += buildAnimateElement('fill', fillValues, {
-                    id: `${key}_fill`
+                    id: `${key}_fill`,
+                    sampleFrames: fillAnimation.sampleFrames,
+                    directKeyframeProp: fillItem.c,
+                    mapValue: value => colorToRGB(value)
                 });
             }
         } else if (strokeItem || gradientStrokeItem) {
@@ -1627,11 +1811,21 @@
 
         if (activeFillItem) {
             attrs.push(`fill-rule="${mapFillRule(activeFillItem.r)}"`);
-            const fillOpacity = globalSampleFrames.map(frame => formatNumber(clamp(getScalarValue(getPropertyValue(activeFillItem.o, frame, 100), 100) / 100, 0, 1)));
+            const fillOpacityAnimation = sampleAnimationValues(frame => {
+                return clamp(getScalarValue(getPropertyValue(activeFillItem.o, frame, 100), 100) / 100, 0, 1);
+            }, {
+                attributeName: 'fill-opacity',
+                sources: [activeFillItem.o],
+                enableAdaptive: false
+            });
+            const fillOpacity = fillOpacityAnimation.values.map(formatNumber);
             attrs.push(`fill-opacity="${fillOpacity[0]}"`);
             if (!allValuesEqual(fillOpacity)) {
                 animations += buildAnimateElement('fill-opacity', fillOpacity, {
-                    id: `${key}_fillOpacity`
+                    id: `${key}_fillOpacity`,
+                    sampleFrames: fillOpacityAnimation.sampleFrames,
+                    directKeyframeProp: activeFillItem.o,
+                    mapValue: value => formatNumber(clamp(getScalarValue(value, 100) / 100, 0, 1))
                 });
             }
         }
@@ -1639,11 +1833,33 @@
         const activeStrokeItem = gradientStrokeItem || strokeItem;
         if (activeStrokeItem) {
             const strokeGradientId = gradientStrokeItem ? createGradientDef(gradientStrokeItem, `${key}_stroke`) : null;
-            const strokeValues = strokeGradientId
-                ? globalSampleFrames.map(() => `url(#${strokeGradientId})`)
-                : globalSampleFrames.map(frame => colorToRGB(getPropertyValue(strokeItem.c, frame, [0, 0, 0])));
-            const strokeWidthValues = globalSampleFrames.map(frame => formatNumber(getScalarValue(getPropertyValue(activeStrokeItem.w, frame, 0), 0)));
-            const strokeOpacityValues = globalSampleFrames.map(frame => formatNumber(clamp(getScalarValue(getPropertyValue(activeStrokeItem.o, frame, 100), 100) / 100, 0, 1)));
+            const strokeColorAnimation = strokeGradientId
+                ? {
+                    sampleFrames: [globalFrameStart, globalFrameStart + globalFrameCount],
+                    values: [`url(#${strokeGradientId})`, `url(#${strokeGradientId})`]
+                }
+                : sampleAnimationValues(frame => colorToRGB(getPropertyValue(strokeItem.c, frame, [0, 0, 0])), {
+                    attributeName: 'stroke',
+                    sources: [strokeItem.c],
+                    enableAdaptive: false
+                });
+            const strokeWidthAnimation = sampleAnimationValues(frame => {
+                return getScalarValue(getPropertyValue(activeStrokeItem.w, frame, 0), 0);
+            }, {
+                attributeName: 'stroke-width',
+                sources: [activeStrokeItem.w],
+                enableAdaptive: false
+            });
+            const strokeOpacityAnimation = sampleAnimationValues(frame => {
+                return clamp(getScalarValue(getPropertyValue(activeStrokeItem.o, frame, 100), 100) / 100, 0, 1);
+            }, {
+                attributeName: 'stroke-opacity',
+                sources: [activeStrokeItem.o],
+                enableAdaptive: false
+            });
+            const strokeValues = strokeColorAnimation.values;
+            const strokeWidthValues = strokeWidthAnimation.values.map(formatNumber);
+            const strokeOpacityValues = strokeOpacityAnimation.values.map(formatNumber);
 
             attrs.push(`stroke="${strokeValues[0]}"`);
             attrs.push(`stroke-width="${strokeWidthValues[0]}"`);
@@ -1655,17 +1871,26 @@
 
             if (!allValuesEqual(strokeValues)) {
                 animations += buildAnimateElement('stroke', strokeValues, {
-                    id: `${key}_stroke`
+                    id: `${key}_stroke`,
+                    sampleFrames: strokeColorAnimation.sampleFrames,
+                    directKeyframeProp: strokeGradientId ? null : strokeItem.c,
+                    mapValue: value => colorToRGB(value)
                 });
             }
             if (!allValuesEqual(strokeWidthValues)) {
                 animations += buildAnimateElement('stroke-width', strokeWidthValues, {
-                    id: `${key}_strokeWidth`
+                    id: `${key}_strokeWidth`,
+                    sampleFrames: strokeWidthAnimation.sampleFrames,
+                    directKeyframeProp: activeStrokeItem.w,
+                    mapValue: value => formatNumber(getScalarValue(value, 0))
                 });
             }
             if (!allValuesEqual(strokeOpacityValues)) {
                 animations += buildAnimateElement('stroke-opacity', strokeOpacityValues, {
-                    id: `${key}_strokeOpacity`
+                    id: `${key}_strokeOpacity`,
+                    sampleFrames: strokeOpacityAnimation.sampleFrames,
+                    directKeyframeProp: activeStrokeItem.o,
+                    mapValue: value => formatNumber(clamp(getScalarValue(value, 100) / 100, 0, 1))
                 });
             }
         }
@@ -1675,21 +1900,23 @@
 
     function createGradientDef(item, key) {
         const stopCount = item.g && typeof item.g.p === 'number' ? item.g.p : 0;
-        const firstState = parseGradientState(getPropertyValue(item.g && item.g.k, globalSampleFrames[0], []), stopCount);
-        const x1Values = globalSampleFrames.map(frame => evaluateVec2(getPropertyValue(item.s, frame, [0, 0]))[0]);
-        const y1Values = globalSampleFrames.map(frame => evaluateVec2(getPropertyValue(item.s, frame, [0, 0]))[1]);
-        const x2Values = globalSampleFrames.map(frame => evaluateVec2(getPropertyValue(item.e, frame, [0, 0]))[0]);
-        const y2Values = globalSampleFrames.map(frame => evaluateVec2(getPropertyValue(item.e, frame, [0, 0]))[1]);
+        const gradientSampleFrames = buildLocalSampleFrames([item.s, item.e, item.g && item.g.k]);
+        const firstState = parseGradientState(getPropertyValue(item.g && item.g.k, gradientSampleFrames[0], []), stopCount);
+        const x1Values = gradientSampleFrames.map(frame => evaluateVec2(getPropertyValue(item.s, frame, [0, 0]))[0]);
+        const y1Values = gradientSampleFrames.map(frame => evaluateVec2(getPropertyValue(item.s, frame, [0, 0]))[1]);
+        const x2Values = gradientSampleFrames.map(frame => evaluateVec2(getPropertyValue(item.e, frame, [0, 0]))[0]);
+        const y2Values = gradientSampleFrames.map(frame => evaluateVec2(getPropertyValue(item.e, frame, [0, 0]))[1]);
 
         const stopAnimationValues = firstState.stops.map((_, index) => {
             return {
-                offsetValues: globalSampleFrames.map(frame => parseGradientState(getPropertyValue(item.g && item.g.k, frame, []), stopCount).stops[index].offset),
-                colorValues: globalSampleFrames.map(frame => parseGradientState(getPropertyValue(item.g && item.g.k, frame, []), stopCount).stops[index].color),
-                opacityValues: globalSampleFrames.map(frame => parseGradientState(getPropertyValue(item.g && item.g.k, frame, []), stopCount).stops[index].opacity)
+                offsetValues: gradientSampleFrames.map(frame => parseGradientState(getPropertyValue(item.g && item.g.k, frame, []), stopCount).stops[index].offset),
+                colorValues: gradientSampleFrames.map(frame => parseGradientState(getPropertyValue(item.g && item.g.k, frame, []), stopCount).stops[index].color),
+                opacityValues: gradientSampleFrames.map(frame => parseGradientState(getPropertyValue(item.g && item.g.k, frame, []), stopCount).stops[index].opacity)
             };
         });
 
         const gradientSignature = JSON.stringify({
+            sampleFrames: gradientSampleFrames.map(frame => formatNumber(frame)),
             stopCount,
             x1Values: x1Values.map(formatNumber),
             y1Values: y1Values.map(formatNumber),
@@ -1708,18 +1935,18 @@
         const gradientId = getUID('grad');
 
         let gradientHTML = `\n<linearGradient id="${gradientId}" gradientUnits="userSpaceOnUse" x1="${formatNumber(x1Values[0])}" y1="${formatNumber(y1Values[0])}" x2="${formatNumber(x2Values[0])}" y2="${formatNumber(y2Values[0])}">`;
-        if (!allValuesEqual(x1Values)) gradientHTML += buildAnimateElement('x1', x1Values, { id: `${key}_x1` });
-        if (!allValuesEqual(y1Values)) gradientHTML += buildAnimateElement('y1', y1Values, { id: `${key}_y1` });
-        if (!allValuesEqual(x2Values)) gradientHTML += buildAnimateElement('x2', x2Values, { id: `${key}_x2` });
-        if (!allValuesEqual(y2Values)) gradientHTML += buildAnimateElement('y2', y2Values, { id: `${key}_y2` });
+        if (!allValuesEqual(x1Values)) gradientHTML += buildAnimateElement('x1', x1Values, { id: `${key}_x1`, sampleFrames: gradientSampleFrames });
+        if (!allValuesEqual(y1Values)) gradientHTML += buildAnimateElement('y1', y1Values, { id: `${key}_y1`, sampleFrames: gradientSampleFrames });
+        if (!allValuesEqual(x2Values)) gradientHTML += buildAnimateElement('x2', x2Values, { id: `${key}_x2`, sampleFrames: gradientSampleFrames });
+        if (!allValuesEqual(y2Values)) gradientHTML += buildAnimateElement('y2', y2Values, { id: `${key}_y2`, sampleFrames: gradientSampleFrames });
 
         for (let index = 0; index < firstState.stops.length; index++) {
             const { offsetValues, colorValues, opacityValues } = stopAnimationValues[index];
 
             gradientHTML += `\n  <stop offset="${formatNumber(offsetValues[0])}%" stop-color="${colorValues[0]}" stop-opacity="${formatNumber(opacityValues[0])}">`;
-            if (!allValuesEqual(offsetValues)) gradientHTML += buildAnimateElement('offset', offsetValues, { id: `${key}_offset_${index}`, formatter: value => `${formatNumber(value)}%`, tolerance: 0.05 });
-            if (!allValuesEqual(colorValues)) gradientHTML += buildAnimateElement('stop-color', colorValues, { id: `${key}_color_${index}` });
-            if (!allValuesEqual(opacityValues)) gradientHTML += buildAnimateElement('stop-opacity', opacityValues, { id: `${key}_opacity_${index}` });
+            if (!allValuesEqual(offsetValues)) gradientHTML += buildAnimateElement('offset', offsetValues, { id: `${key}_offset_${index}`, formatter: value => `${formatNumber(value)}%`, tolerance: 0.05, sampleFrames: gradientSampleFrames });
+            if (!allValuesEqual(colorValues)) gradientHTML += buildAnimateElement('stop-color', colorValues, { id: `${key}_color_${index}`, sampleFrames: gradientSampleFrames });
+            if (!allValuesEqual(opacityValues)) gradientHTML += buildAnimateElement('stop-opacity', opacityValues, { id: `${key}_opacity_${index}`, sampleFrames: gradientSampleFrames });
             gradientHTML += '</stop>';
         }
 
@@ -1808,66 +2035,293 @@
         return vertices.map((point, index) => `${index === 0 ? 'M' : 'L'} ${formatNumber(point[0])} ${formatNumber(point[1])}`).join(' ') + ' Z';
     }
 
-    function wrapAnimatedTransform(innerHTML, type, key, sampler, identityValue) {
-        const sampledValues = globalSampleFrames.map(frame => sampler(frame));
-        const stringValues = sampledValues.map(value => formatTransformValue(type, value));
+    function wrapAnimatedTransform(innerHTML, type, key, sampler, identityValue, options = {}) {
+        const formatter = value => formatTransformValue(type, value);
+        const directAnimation = buildDirectKeyframeAnimation(options.directKeyframeProp, {
+            formatter,
+            mapValue: options.mapValue,
+            disallowSpatial: options.disallowSpatial
+        });
+
+        if (directAnimation) {
+            if (allValuesEqual(directAnimation.values) && valuesMatchIdentity(directAnimation.initialValue, identityValue)) {
+                return innerHTML;
+            }
+
+            const transformAttr = ` transform="${type}(${directAnimation.values[0]})"`;
+            const animateHTML = directAnimation.values.length <= 1 || allValuesEqual(directAnimation.values)
+                ? ''
+                : serializeAnimateTransformElement(type, key, directAnimation);
+            return `<g${transformAttr}>${animateHTML}${innerHTML}</g>`;
+        }
+
+        const animation = sampleAnimationValues(sampler, {
+            ...options,
+            attributeName: options.attributeName || type,
+            tolerance: options.tolerance ?? getTransformAnimationTolerance(type)
+        });
+        const sampledValues = animation.values;
+        const stringValues = sampledValues.map(formatter);
         if (allValuesEqual(stringValues) && valuesMatchIdentity(sampledValues[0], identityValue)) {
             return innerHTML;
         }
 
         const transformAttr = ` transform="${type}(${stringValues[0]})"`;
-        const animateHTML = allValuesEqual(stringValues) ? '' : buildAnimateTransformElement(type, sampledValues, key);
+        const animateHTML = allValuesEqual(stringValues) ? '' : buildAnimateTransformElement(type, sampledValues, key, {
+            sampleFrames: animation.sampleFrames,
+            tolerance: options.tolerance
+        });
         return `<g${transformAttr}>${animateHTML}${innerHTML}</g>`;
     }
 
-    function wrapAnimatedAttribute(innerHTML, attributeName, key, sampler, identityValue) {
-        const sampledValues = globalSampleFrames.map(frame => sampler(frame));
-        const stringValues = sampledValues.map(value => formatAttributeValue(value));
+    function wrapAnimatedAttribute(innerHTML, attributeName, key, sampler, identityValue, options = {}) {
+        const formatter = options.formatter || formatAttributeValue;
+        const directAnimation = buildDirectKeyframeAnimation(options.directKeyframeProp, {
+            attributeName,
+            formatter,
+            mapValue: options.mapValue,
+            disallowSpatial: options.disallowSpatial
+        });
+
+        if (directAnimation) {
+            if (allValuesEqual(directAnimation.values) && valuesMatchIdentity(directAnimation.initialValue, identityValue)) {
+                return innerHTML;
+            }
+
+            const attr = ` ${attributeName}="${directAnimation.values[0]}"`;
+            const animateHTML = directAnimation.values.length <= 1 || allValuesEqual(directAnimation.values)
+                ? ''
+                : serializeAnimateElement(attributeName, directAnimation, {
+                    id: key,
+                    extraAttributes: options.extraAttributes || ''
+                });
+            return `<g${attr}>${animateHTML}${innerHTML}</g>`;
+        }
+
+        const animation = sampleAnimationValues(sampler, {
+            ...options,
+            attributeName
+        });
+        const sampledValues = animation.values;
+        const stringValues = sampledValues.map(formatter);
         if (allValuesEqual(stringValues) && valuesMatchIdentity(sampledValues[0], identityValue)) {
             return innerHTML;
         }
 
         const attr = ` ${attributeName}="${stringValues[0]}"`;
-        const animateHTML = allValuesEqual(stringValues) ? '' : buildAnimateElement(attributeName, sampledValues, { id: key });
+        const animateHTML = allValuesEqual(stringValues) ? '' : buildAnimateElement(attributeName, sampledValues, {
+            id: key,
+            sampleFrames: animation.sampleFrames,
+            tolerance: options.tolerance,
+            toComparable: options.toComparable,
+            signatureExtractor: options.signatureExtractor,
+            calcMode: options.calcMode
+        });
         return `<g${attr}>${animateHTML}${innerHTML}</g>`;
     }
 
-    function buildAnimateTransformElement(type, values, key) {
+    function buildAnimateTransformElement(type, values, key, options = {}) {
         const optimized = optimizeAnimationSamples(values, {
             formatter: value => formatTransformValue(type, value),
-            tolerance: getTransformAnimationTolerance(type)
+            tolerance: options.tolerance ?? getTransformAnimationTolerance(type),
+            sampleFrames: options.sampleFrames
         });
-        return `<animateTransform id="${key}" attributeName="transform" type="${type}" dur="${globalDuration}s" repeatCount="indefinite" calcMode="linear" keyTimes="${optimized.keyTimes}" values="${optimized.values.join(';')}" />`;
+        return serializeAnimateTransformElement(type, key, optimized);
     }
 
     function buildAnimateElement(attributeName, values, options = {}) {
-        const idAttr = options.id ? ` id="${options.id}"` : '';
-        const extra = options.extraAttributes || '';
+        const directAnimation = buildDirectKeyframeAnimation(options.directKeyframeProp, {
+            attributeName,
+            formatter: options.formatter || formatAttributeValue,
+            mapValue: options.mapValue,
+            disallowSpatial: options.disallowSpatial
+        });
+        if (directAnimation) {
+            return serializeAnimateElement(attributeName, directAnimation, options);
+        }
+
         const optimized = optimizeAnimationSamples(values, {
             attributeName,
             formatter: options.formatter || formatAttributeValue,
             tolerance: options.tolerance,
             toComparable: options.toComparable,
-            signatureExtractor: options.signatureExtractor
+            signatureExtractor: options.signatureExtractor,
+            sampleFrames: options.sampleFrames
         });
-        return `<animate${idAttr} attributeName="${attributeName}" dur="${globalDuration}s" repeatCount="indefinite" calcMode="linear" keyTimes="${optimized.keyTimes}" values="${optimized.values.join(';')}"${extra} />`;
+        return serializeAnimateElement(attributeName, optimized, options);
     }
 
     function optimizeAnimationSamples(values, options = {}) {
+        const sampleFrames = Array.isArray(options.sampleFrames) && options.sampleFrames.length
+            ? options.sampleFrames
+            : globalSampleFrames;
+        const sampleKeyTimes = getKeyTimeValues(sampleFrames);
         if (!Array.isArray(values) || !values.length) {
-            return { keyTimes: globalKeyTimes, values: [] };
+            return { keyTimes: sampleKeyTimes.join(';'), values: [] };
         }
 
         const formatter = options.formatter || formatAttributeValue;
         const comparable = buildComparableSamples(values, options);
         const keepIndices = comparable
-            ? reduceInterpolableSamples(comparable, options.tolerance ?? getAnimationTolerance(options.attributeName))
+            ? reduceInterpolableSamples(comparable, options.tolerance ?? getAnimationTolerance(options.attributeName), sampleFrames)
             : reduceDiscreteSamples(values);
 
         return {
-            keyTimes: keepIndices.map(index => globalKeyTimeValues[index] || formatNumber(globalKeyTimeNumbers[index] || 0)).join(';'),
+            keyTimes: keepIndices.map(index => sampleKeyTimes[index] || sampleKeyTimes[0] || '0').join(';'),
             values: keepIndices.map(index => formatter(values[index]))
         };
+    }
+
+    function serializeAnimateTransformElement(type, key, animation) {
+        let attrs = ` id="${key}" attributeName="transform" type="${type}" dur="${globalDuration}s" repeatCount="indefinite" calcMode="${animation.calcMode || 'linear'}" keyTimes="${animation.keyTimes}" values="${animation.values.join(';')}"`;
+        if (animation.keySplines) attrs += ` keySplines="${animation.keySplines}"`;
+        return `<animateTransform${attrs} />`;
+    }
+
+    function serializeAnimateElement(attributeName, animation, options = {}) {
+        const idAttr = options.id ? ` id="${options.id}"` : '';
+        const extra = options.extraAttributes || '';
+        let attrs = `${idAttr} attributeName="${attributeName}" dur="${globalDuration}s" repeatCount="indefinite" calcMode="${animation.calcMode || options.calcMode || 'linear'}" keyTimes="${animation.keyTimes}" values="${animation.values.join(';')}"`;
+        if (animation.keySplines) attrs += ` keySplines="${animation.keySplines}"`;
+        return `<animate${attrs}${extra} />`;
+    }
+
+    function buildDirectKeyframeAnimation(prop, options = {}) {
+        if (!isAnimatedProperty(prop) || !Array.isArray(prop.k)) return null;
+        if (options.disallowSpatial && hasSpatialTangents(prop)) return null;
+
+        const keyframes = prop.k.filter(keyframe => keyframe && keyframe.t != null);
+        if (keyframes.length < 2) return null;
+
+        const points = [];
+
+        function pushPoint(time, value) {
+            if (value == null) return;
+            const clampedTime = clamp(time, globalFrameStart, globalFrameStart + globalFrameCount);
+            if (points.length && Math.abs(points[points.length - 1].time - clampedTime) < 0.0001) {
+                points[points.length - 1].value = value;
+                return;
+            }
+            points.push({ time: clampedTime, value });
+        }
+
+        const initialValue = mapDirectAnimationValue(getPropertyValue(prop, globalFrameStart, getFirstKeyframeValue(keyframes)), options);
+        pushPoint(globalFrameStart, initialValue);
+
+        for (let index = 0; index < keyframes.length - 1; index++) {
+            const current = keyframes[index];
+            const next = keyframes[index + 1];
+            const segmentStart = Math.max(globalFrameStart, current.t);
+            const segmentEnd = Math.min(globalFrameStart + globalFrameCount, next.t);
+            if (!(segmentEnd > segmentStart)) continue;
+
+            const startValue = mapDirectAnimationValue(getPropertyValue(prop, segmentStart, initialValue), options);
+            const endValue = mapDirectAnimationValue(getPropertyValue(prop, segmentEnd, initialValue), options);
+            pushPoint(segmentStart, startValue);
+            pushPoint(segmentEnd, current.h === 1 ? startValue : endValue);
+        }
+
+        const finalValue = mapDirectAnimationValue(getPropertyValue(prop, globalFrameStart + globalFrameCount, getLastKeyframeValue(keyframes)), options);
+        pushPoint(globalFrameStart + globalFrameCount, finalValue);
+
+        if (points.length < 2) return null;
+
+        const values = points.map(point => formatDirectAnimationValue(point.value, options));
+        const keyTimes = getKeyTimeValues(points.map(point => point.time)).join(';');
+        const segmentModes = [];
+        for (let index = 0; index < points.length - 1; index++) {
+            const midpoint = (points[index].time + points[index + 1].time) / 2;
+            const segmentKeyframe = findKeyframeForTime(keyframes, midpoint);
+            if (segmentKeyframe && segmentKeyframe.h !== 1 && !canSerializeSvgKeySpline(segmentKeyframe)) {
+                return null;
+            }
+            segmentModes.push({
+                mode: segmentKeyframe && segmentKeyframe.h === 1 ? 'discrete' : 'spline',
+                keyframe: segmentKeyframe
+            });
+        }
+
+        const hasDiscrete = segmentModes.some(segment => segment.mode === 'discrete');
+        const hasSpline = segmentModes.some(segment => segment.mode === 'spline');
+        if (hasDiscrete && hasSpline) return null;
+
+        return {
+            initialValue: points[0].value,
+            values,
+            keyTimes,
+            calcMode: hasDiscrete ? 'discrete' : 'spline',
+            keySplines: hasDiscrete ? '' : segmentModes.map(segment => formatKeySpline(segment.keyframe)).join(';')
+        };
+    }
+
+    function mapDirectAnimationValue(value, options = {}) {
+        if (typeof options.mapValue === 'function') return options.mapValue(value);
+        return value;
+    }
+
+    function formatDirectAnimationValue(value, options = {}) {
+        const formatter = options.formatter || formatAttributeValue;
+        return formatter(value);
+    }
+
+    function formatKeySpline(keyframe) {
+        const controls = extractSvgKeySplineControls(keyframe);
+        if (!controls) return '0 0 1 1';
+        return [controls.x1, controls.y1, controls.x2, controls.y2].map(formatNumber).join(' ');
+    }
+
+    function isAnimatedProperty(prop) {
+        return !!(prop && typeof prop === 'object' && prop.a === 1 && Array.isArray(prop.k));
+    }
+
+    function hasSpatialTangents(prop) {
+        return !!(prop && Array.isArray(prop.k) && prop.k.some(keyframe => keyframe && (keyframe.to != null || keyframe.ti != null)));
+    }
+
+    function canDirectMapPosition(transformData) {
+        return !!(transformData && transformData.p && isAnimatedProperty(transformData.p) && !hasSpatialTangents(transformData.p) && !transformData.px && !transformData.py);
+    }
+
+    function findKeyframeForTime(keyframes, time) {
+        for (let index = 0; index < keyframes.length - 1; index++) {
+            if (time >= keyframes[index].t && time < keyframes[index + 1].t) {
+                return keyframes[index];
+            }
+        }
+        return keyframes[keyframes.length - 1] || null;
+    }
+
+    function canSerializeSvgKeySpline(keyframe) {
+        return !!extractSvgKeySplineControls(keyframe);
+    }
+
+    function extractSvgKeySplineControls(keyframe) {
+        if (!keyframe || !keyframe.i || !keyframe.o) return { x1: 0, y1: 0, x2: 1, y2: 1 };
+
+        const x1 = extractUniformBezierComponent(keyframe.o.x, 0.333, true);
+        const y1 = extractUniformBezierComponent(keyframe.o.y, 0.333, false);
+        const x2 = extractUniformBezierComponent(keyframe.i.x, 0.667, true);
+        const y2 = extractUniformBezierComponent(keyframe.i.y, 0.667, false);
+
+        if ([x1, y1, x2, y2].some(value => value == null)) return null;
+        if (y1 < 0 || y1 > 1 || y2 < 0 || y2 > 1) return null;
+
+        return { x1, y1, x2, y2 };
+    }
+
+    function extractUniformBezierComponent(value, fallback, clampToUnit) {
+        if (Array.isArray(value)) {
+            if (!value.length) return fallback;
+            const numericValues = value.map(entry => Number(entry));
+            if (numericValues.some(entry => !Number.isFinite(entry))) return null;
+            const first = numericValues[0];
+            if (numericValues.some(entry => Math.abs(entry - first) > 0.0001)) return null;
+            return clampToUnit ? clamp(first, 0, 1) : first;
+        }
+
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric)) return clampToUnit ? clamp(fallback, 0, 1) : fallback;
+        return clampToUnit ? clamp(numeric, 0, 1) : numeric;
     }
 
     function buildComparableSamples(values, options = {}) {
@@ -1912,7 +2366,7 @@
         return keep;
     }
 
-    function reduceInterpolableSamples(values, tolerance) {
+    function reduceInterpolableSamples(values, tolerance, sampleFrames = globalSampleFrames) {
         if (!Array.isArray(values) || values.length <= 2) return values.map((_, index) => index);
 
         const keep = new Set([0, values.length - 1]);
@@ -1920,8 +2374,8 @@
         function decimate(start, end) {
             if (end - start <= 1) return;
 
-            const startTime = globalKeyTimeNumbers[start];
-            const endTime = globalKeyTimeNumbers[end];
+            const startTime = sampleFrames[start];
+            const endTime = sampleFrames[end];
             if (!Number.isFinite(startTime) || !Number.isFinite(endTime) || Math.abs(endTime - startTime) < 0.000001) {
                 for (let index = start + 1; index < end; index++) keep.add(index);
                 return;
@@ -1931,7 +2385,7 @@
             let maxIndex = -1;
 
             for (let index = start + 1; index < end; index++) {
-                const progress = clamp((globalKeyTimeNumbers[index] - startTime) / (endTime - startTime), 0, 1);
+                const progress = clamp((sampleFrames[index] - startTime) / (endTime - startTime), 0, 1);
                 const expected = interpolateValue(values[start], values[end], progress);
                 const error = measureComparableDistance(values[index], expected);
                 if (error > maxError) {
