@@ -1395,55 +1395,7 @@
 
 
     function applyTransformWrappers(transformData, innerHTML, key, options = {}) {
-        let wrapped = innerHTML;
-        const staticOrientation = evaluateVec3(getPropertyValue(transformData.or, globalFrameStart, [0, 0, 0]), [0, 0, 0]);
-        const hasAnimatedOrientation = isAnimatedProperty(transformData.or) || isAnimatedProperty(transformData.rx) || isAnimatedProperty(transformData.ry);
-        const rotationProp = transformData.r || transformData.rz;
-
-        wrapped = wrapAnimatedTransform(wrapped, 'translate', `anchor_${key}`, frame => {
-            const anchor = evaluateVec2(getPropertyValue(transformData.a, frame, [0, 0, 0]));
-            return [-anchor[0], -anchor[1]];
-        }, [0, 0], {
-            sources: [transformData.a],
-            directKeyframeProp: transformData.a,
-            mapValue: value => {
-                const anchor = evaluateVec2(value, [0, 0]);
-                return [-anchor[0], -anchor[1]];
-            }
-        });
-
-        wrapped = wrapAnimatedTransform(wrapped, 'scale', `scale_${key}`, frame => {
-            return getProjectedScaleValue(transformData, frame);
-        }, [1, 1], {
-            sources: [transformData.s, transformData.or, transformData.rx, transformData.ry],
-            directKeyframeProp: !hasAnimatedOrientation ? transformData.s : null,
-            mapValue: value => {
-                const scale = evaluateVec2(value, [100, 100]);
-                return [
-                    (scale[0] / 100) * Math.cos((staticOrientation[1] * Math.PI) / 180),
-                    (scale[1] / 100) * Math.cos((staticOrientation[0] * Math.PI) / 180)
-                ];
-            }
-        });
-
-        wrapped = wrapSkewTransform(wrapped, transformData, key);
-
-        wrapped = wrapAnimatedTransform(wrapped, 'rotate', `rotate_${key}`, frame => {
-            return getPlanarRotationValue(transformData, frame);
-        }, 0, {
-            sources: [transformData.r, transformData.rz, transformData.or],
-            directKeyframeProp: !isAnimatedProperty(transformData.or) ? rotationProp : null,
-            mapValue: value => getScalarValue(value, 0) + staticOrientation[2]
-        });
-
-        wrapped = wrapAnimatedTransform(wrapped, 'translate', `position_${key}`, frame => {
-            return getPositionValue(transformData, frame);
-        }, [0, 0], {
-            sources: [transformData.p, transformData.px, transformData.py],
-            directKeyframeProp: canDirectMapPosition(transformData) ? transformData.p : null,
-            mapValue: value => evaluateVec2(value, [0, 0]),
-            disallowSpatial: true
-        });
+        let wrapped = applyTransformChain(transformData, innerHTML, key);
 
         if (options.includeOpacity) {
             wrapped = wrapAnimatedAttribute(wrapped, 'opacity', `opacity_${key}`, frame => {
@@ -1469,6 +1421,14 @@
         return wrapped;
     }
 
+    function applyTransformChain(transformData, innerHTML, key) {
+        const transformSteps = buildTransformSteps(transformData, key);
+        if (!transformSteps.length) return innerHTML;
+
+        const operations = transformSteps.map(step => buildTransformOperation(step)).filter(Boolean);
+        return wrapSequentialTransformSteps(innerHTML, operations);
+    }
+
     function getProjectedScaleValue(transformData, frame) {
         const scale = evaluateVec2(getPropertyValue(transformData.s, frame, [100, 100, 100]), [100, 100]);
         const orientation = evaluateVec3(getPropertyValue(transformData.or, frame, [0, 0, 0]), [0, 0, 0]);
@@ -1485,37 +1445,84 @@
         return baseRotation + orientation[2];
     }
 
-    function wrapSkewTransform(innerHTML, transformData, key) {
+    function buildTransformSteps(transformData, key) {
+        const steps = [];
+        const staticOrientation = evaluateVec3(getPropertyValue(transformData.or, globalFrameStart, [0, 0, 0]), [0, 0, 0]);
+        const hasAnimatedOrientation = isAnimatedProperty(transformData.or) || isAnimatedProperty(transformData.rx) || isAnimatedProperty(transformData.ry);
+        const rotationProp = transformData.r || transformData.rz;
         const initialSkew = getScalarValue(getPropertyValue(transformData.sk, globalFrameStart, 0), 0);
         const skewAnimated = transformData && transformData.sk && transformData.sk.a === 1;
-        if (!skewAnimated && Math.abs(initialSkew) < 0.0001) return innerHTML;
 
-        let wrapped = innerHTML;
-        wrapped = wrapAnimatedTransform(wrapped, 'rotate', `skew_axis_in_${key}`, frame => {
-            return getScalarValue(getPropertyValue(transformData.sa, frame, 0), 0);
+        steps.push(createTransformStep('translate', `anchor_${key}`, frame => {
+            const anchor = evaluateVec2(getPropertyValue(transformData.a, frame, [0, 0, 0]));
+            return [-anchor[0], -anchor[1]];
+        }, [0, 0], {
+            sources: [transformData.a],
+            directKeyframeProp: transformData.a,
+            mapValue: value => {
+                const anchor = evaluateVec2(value, [0, 0]);
+                return [-anchor[0], -anchor[1]];
+            }
+        }));
+
+        steps.push(createTransformStep('scale', `scale_${key}`, frame => {
+            return getProjectedScaleValue(transformData, frame);
+        }, [1, 1], {
+            sources: [transformData.s, transformData.or, transformData.rx, transformData.ry],
+            directKeyframeProp: !hasAnimatedOrientation ? transformData.s : null,
+            mapValue: value => {
+                const scale = evaluateVec2(value, [100, 100]);
+                return [
+                    (scale[0] / 100) * Math.cos((staticOrientation[1] * Math.PI) / 180),
+                    (scale[1] / 100) * Math.cos((staticOrientation[0] * Math.PI) / 180)
+                ];
+            }
+        }));
+
+        if (skewAnimated || Math.abs(initialSkew) >= 0.0001) {
+            steps.push(createTransformStep('rotate', `skew_axis_in_${key}`, frame => {
+                return getScalarValue(getPropertyValue(transformData.sa, frame, 0), 0);
+            }, 0, {
+                sources: [transformData.sa],
+                directKeyframeProp: transformData.sa,
+                mapValue: value => getScalarValue(value, 0)
+            }));
+
+            steps.push(createTransformStep('skewX', `skew_value_${key}`, frame => {
+                return getScalarValue(getPropertyValue(transformData.sk, frame, 0), 0);
+            }, 0, {
+                sources: [transformData.sk],
+                directKeyframeProp: transformData.sk,
+                mapValue: value => getScalarValue(value, 0)
+            }));
+
+            steps.push(createTransformStep('rotate', `skew_axis_out_${key}`, frame => {
+                return -getScalarValue(getPropertyValue(transformData.sa, frame, 0), 0);
+            }, 0, {
+                sources: [transformData.sa],
+                directKeyframeProp: transformData.sa,
+                mapValue: value => -getScalarValue(value, 0)
+            }));
+        }
+
+        steps.push(createTransformStep('rotate', `rotate_${key}`, frame => {
+            return getPlanarRotationValue(transformData, frame);
         }, 0, {
-            sources: [transformData.sa],
-            directKeyframeProp: transformData.sa,
-            mapValue: value => getScalarValue(value, 0)
-        });
+            sources: [transformData.r, transformData.rz, transformData.or],
+            directKeyframeProp: !isAnimatedProperty(transformData.or) ? rotationProp : null,
+            mapValue: value => getScalarValue(value, 0) + staticOrientation[2]
+        }));
 
-        wrapped = wrapAnimatedTransform(wrapped, 'skewX', `skew_value_${key}`, frame => {
-            return getScalarValue(getPropertyValue(transformData.sk, frame, 0), 0);
-        }, 0, {
-            sources: [transformData.sk],
-            directKeyframeProp: transformData.sk,
-            mapValue: value => getScalarValue(value, 0)
-        });
+        steps.push(createTransformStep('translate', `position_${key}`, frame => {
+            return getPositionValue(transformData, frame);
+        }, [0, 0], {
+            sources: [transformData.p, transformData.px, transformData.py],
+            directKeyframeProp: canDirectMapPosition(transformData) ? transformData.p : null,
+            mapValue: value => evaluateVec2(value, [0, 0]),
+            disallowSpatial: true
+        }));
 
-        wrapped = wrapAnimatedTransform(wrapped, 'rotate', `skew_axis_out_${key}`, frame => {
-            return -getScalarValue(getPropertyValue(transformData.sa, frame, 0), 0);
-        }, 0, {
-            sources: [transformData.sa],
-            directKeyframeProp: transformData.sa,
-            mapValue: value => -getScalarValue(value, 0)
-        });
-
-        return wrapped;
+        return steps;
     }
 
     function renderShapeItems(items, scope) {
@@ -2035,6 +2042,161 @@
         return vertices.map((point, index) => `${index === 0 ? 'M' : 'L'} ${formatNumber(point[0])} ${formatNumber(point[1])}`).join(' ') + ' Z';
     }
 
+    function createTransformStep(type, key, sampler, identityValue, options = {}) {
+        return { type, key, sampler, identityValue, options };
+    }
+
+    function isTransformStepAnimated(step) {
+        return normalizeAnimationSources(step && step.options && step.options.sources).some(source => isAnimatedProperty(source));
+    }
+
+    function wrapSequentialTransformSteps(innerHTML, operations) {
+        let wrapped = innerHTML;
+        let staticMatrix = createIdentityMatrix();
+        let staticSteps = [];
+
+        operations.forEach(operation => {
+            if (!operation) return;
+            const { step } = operation;
+
+            if (!operation.isAnimated) {
+                if (!valuesMatchIdentity(operation.initialValue, step.identityValue)) {
+                    staticMatrix = multiplyMatrices(getTransformMatrix(step.type, operation.initialValue), staticMatrix);
+                    staticSteps.push({
+                        type: step.type,
+                        value: operation.initialValue
+                    });
+                }
+                return;
+            }
+
+            if (staticSteps.length) {
+                wrapped = wrapStaticTransformSteps(wrapped, staticSteps, staticMatrix);
+                staticMatrix = createIdentityMatrix();
+                staticSteps = [];
+            }
+
+            wrapped = wrapTransformOperation(wrapped, operation);
+        });
+
+        if (staticSteps.length) {
+            wrapped = wrapStaticTransformSteps(wrapped, staticSteps, staticMatrix);
+        }
+
+        return wrapped;
+    }
+
+    function buildTransformOperation(step) {
+        if (!step) return null;
+
+        const formatter = value => formatTransformValue(step.type, value);
+        const directAnimation = buildDirectKeyframeAnimation(step.options && step.options.directKeyframeProp, {
+            formatter,
+            mapValue: step.options && step.options.mapValue,
+            disallowSpatial: step.options && step.options.disallowSpatial
+        });
+
+        if (directAnimation) {
+            const isAnimated = directAnimation.values.length > 1 && !allValuesEqual(directAnimation.values);
+            return {
+                step,
+                initialValue: directAnimation.initialValue,
+                isAnimated,
+                mode: 'direct',
+                animation: directAnimation
+            };
+        }
+
+        const animation = sampleAnimationValues(step.sampler, {
+            ...(step.options || {}),
+            attributeName: step.options && step.options.attributeName ? step.options.attributeName : step.type,
+            tolerance: step.options && step.options.tolerance != null
+                ? step.options.tolerance
+                : getTransformAnimationTolerance(step.type)
+        });
+        const sampledValues = animation.values;
+        const stringValues = sampledValues.map(formatter);
+
+        return {
+            step,
+            initialValue: sampledValues[0],
+            isAnimated: !allValuesEqual(stringValues),
+            mode: 'sampled',
+            sampledValues,
+            sampleFrames: animation.sampleFrames
+        };
+    }
+
+    function wrapTransformOperation(innerHTML, operation) {
+        const transformAttr = ` transform="${operation.step.type}(${formatTransformValue(operation.step.type, operation.initialValue)})"`;
+        let animateHTML = '';
+
+        if (operation.mode === 'direct') {
+            if (operation.animation.values.length > 1 && !allValuesEqual(operation.animation.values)) {
+                animateHTML = serializeAnimateTransformElement(operation.step.type, operation.step.key, operation.animation);
+            }
+        } else if (operation.sampledValues && operation.sampledValues.length > 1) {
+            animateHTML = buildAnimateTransformElement(operation.step.type, operation.sampledValues, operation.step.key, {
+                sampleFrames: operation.sampleFrames,
+                tolerance: operation.step.options && operation.step.options.tolerance
+            });
+        }
+
+        return `<g${transformAttr}>${animateHTML}${innerHTML}</g>`;
+    }
+
+    function wrapStaticTransformSteps(innerHTML, staticSteps, matrix) {
+        const matrixValue = formatTransformValue('matrix', matrix);
+        const listValue = staticSteps.map(step => `${step.type}(${formatTransformValue(step.type, step.value)})`).join(' ');
+        const useMatrix = staticSteps.length > 1 && matrixValue.length + 'matrix()'.length < listValue.length;
+        const transformValue = useMatrix ? `matrix(${matrixValue})` : listValue;
+        return `<g transform="${transformValue}">${innerHTML}</g>`;
+    }
+
+    function getTransformMatrix(type, value) {
+        if (type === 'translate') {
+            const position = evaluateVec2(value, [0, 0]);
+            return [1, 0, 0, 1, position[0], position[1]];
+        }
+        if (type === 'scale') {
+            const scale = evaluateVec2(value, [1, 1]);
+            return [scale[0], 0, 0, scale[1], 0, 0];
+        }
+        if (type === 'rotate') {
+            const angle = (Number(value) || 0) * Math.PI / 180;
+            const cos = Math.cos(angle);
+            const sin = Math.sin(angle);
+            return [cos, sin, -sin, cos, 0, 0];
+        }
+        if (type === 'skewX') {
+            const angle = (Number(value) || 0) * Math.PI / 180;
+            return [1, 0, Math.tan(angle), 1, 0, 0];
+        }
+        if (type === 'matrix') {
+            return Array.isArray(value) && value.length === 6 ? value.slice() : createIdentityMatrix();
+        }
+        return createIdentityMatrix();
+    }
+
+    function multiplyMatrices(left, right) {
+        return [
+            left[0] * right[0] + left[2] * right[1],
+            left[1] * right[0] + left[3] * right[1],
+            left[0] * right[2] + left[2] * right[3],
+            left[1] * right[2] + left[3] * right[3],
+            left[0] * right[4] + left[2] * right[5] + left[4],
+            left[1] * right[4] + left[3] * right[5] + left[5]
+        ];
+    }
+
+    function createIdentityMatrix() {
+        return [1, 0, 0, 1, 0, 0];
+    }
+
+    function isIdentityMatrix(matrix) {
+        return Array.isArray(matrix) && valuesMatchIdentity(matrix, createIdentityMatrix());
+    }
+
     function wrapAnimatedTransform(innerHTML, type, key, sampler, identityValue, options = {}) {
         const formatter = value => formatTransformValue(type, value);
         const directAnimation = buildDirectKeyframeAnimation(options.directKeyframeProp, {
@@ -2409,6 +2571,7 @@
         if (type === 'translate') return 0.05;
         if (type === 'rotate' || type === 'skewX') return 0.05;
         if (type === 'scale') return 0.0005;
+        if (type === 'matrix') return 0.001;
         return 0.02;
     }
 
@@ -2744,6 +2907,7 @@
     }
 
     function formatTransformValue(type, value) {
+        if (type === 'matrix') return (Array.isArray(value) ? value : createIdentityMatrix()).map(item => formatNumber(item)).join(' ');
         if (type === 'rotate') return formatNumber(value);
         if (Array.isArray(value)) return value.map(item => formatNumber(item)).join(' ');
         return formatNumber(value);
