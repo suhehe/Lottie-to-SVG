@@ -140,7 +140,8 @@
             background: var(--text);
             color: #ffffff;
             border: none;
-            padding: 10px 12px;
+            /* padding: 10px 12px; */
+            padding: 4px 12px;
             border-radius: var(--radius-lg);
             cursor: pointer;
             font-size: 13px;
@@ -342,20 +343,24 @@
         .panel-actions {
             display: flex;
             align-items: center;
-            gap: 8px;
+            gap: 12px;
             margin-left: auto;
+            flex-wrap: wrap;
         }
 
         .panel-size {
             display: inline-flex;
             align-items: center;
-            padding: 0 10px;
-            min-height: 32px;
+            justify-content: center;
+            /* padding: 0 12px; */
+            padding: 6px 12px;
+            /* min-height: 40px; */
+            /* min-width: 88px; */
             border: 1px solid var(--border);
-            border-radius: 10px;
-            background: #f7f9fc;
+            border-radius: 16px;
+            background: #f3f4f6;
             color: var(--muted);
-            font-size: 12px;
+            font-size: 14px;
             font-weight: 600;
             white-space: nowrap;
         }
@@ -365,17 +370,18 @@
             align-items: center;
             gap: 4px;
             border: 1px solid var(--border);
-            border-radius: var(--radius-lg);
-            background: #f7f9fc;
+            border-radius: 16px;
+            background: #efefef;
+            padding: 3px;
         }
 
         .view-btn {
             border: none;
             background: transparent;
             color: var(--muted);
-            padding: 7px 10px;
-            border-radius: 9px;
-            font-size: 12px;
+            /* padding: 11px 18px; */
+            border-radius: 13px;
+            font-size: 14px;
             font-weight: 600;
             box-shadow: none;
         }
@@ -389,34 +395,67 @@
         .view-btn.is-active {
             background: var(--surface);
             color: var(--text);
-            box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+            box-shadow: 0 4px 10px rgba(15, 23, 42, 0.08);
         }
 
         .panel-download {
-            padding: 9px 12px;
-            border-radius: 10px;
-            font-size: 12px;
+            /* min-height: 40px; */
+            padding: 8px 22px;
+            border-radius: 16px;
+            font-size: 14px;
             box-shadow: none;
         }
 
-        .toggle {
-            width: 38px;
-            height: 20px;
-            border-radius: 999px;
-            background: rgba(82, 212, 63, 0.28);
-            display: flex;
+        .switch-control {
+            display: inline-flex;
             align-items: center;
-            padding: 2px;
+            gap: 6px;
+            padding: 0 4px 0 8px;
+            color: var(--text);
+            font-size: 14px;
+            font-weight: 600;
         }
 
-        .toggle span {
+        .switch-button {
+            width: 50px;
+            /* height: 34px; */
+            border: none;
+            border-radius: 999px;
+            background: #d9dce4;
+            padding: 3px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: flex-start;
+            transition: background 0.2s ease;
+            box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.04);
+        }
+
+        .switch-button:hover {
+            transform: none;
+            box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.04);
+        }
+
+        .switch-button[aria-checked="true"] {
+            background: #33db19;
+        }
+
+        .switch-button:disabled {
+            opacity: 0.55;
+            cursor: not-allowed;
+        }
+
+        .switch-thumb {
             display: block;
-            width: 16px;
-            height: 16px;
+            width: 20px;
+            height: 20px;
             border-radius: 50%;
-            margin-left: auto;
-            background: var(--success);
-            box-shadow: 0 2px 6px rgba(82, 212, 63, 0.35);
+            background: #fff;
+            box-shadow: 0 2px 6px rgba(15, 23, 42, 0.18);
+            transition: transform 0.2s ease;
+        }
+
+        .switch-button[aria-checked="true"] .switch-thumb {
+            transform: translateX(24px);
         }
 
         .panel-surface {
@@ -454,7 +493,7 @@
             border: 1px solid var(--border);
             border-radius: 16px;
             resize: none;
-            white-space: pre;
+            /* white-space: pre; */
         }
 
         .preview {
@@ -653,12 +692,21 @@
                 margin-left: 0;
             }
 
+            .switch-control {
+                order: 2;
+            }
+
             .view-switch {
                 flex: 1;
             }
 
             .view-btn {
                 flex: 1;
+            }
+
+            .panel-size,
+            .panel-download {
+                min-width: 0;
             }
         }
     </style>
@@ -749,12 +797,18 @@
                 <div class="panel-header">
                     <span class="panel-tag svg">SVG</span>
                     <div class="panel-actions">
+                        <div class="switch-control">
+                            <span>压缩</span>
+                            <button id="svgCompressionToggle" class="switch-button" type="button" role="switch" aria-checked="true" aria-label="切换 SVG 压缩输出" onclick="toggleSvgCompression()">
+                                <span class="switch-thumb"></span>
+                            </button>
+                        </div>
                         <span id="svgSizeLabel" class="panel-size">-</span>
                         <div class="view-switch" aria-label="SVG 面板视图切换">
                             <button id="svgPreviewBtn" class="view-btn is-active" type="button" onclick="setSvgPanelView('preview')">预览</button>
                             <button id="svgCodeBtn" class="view-btn" type="button" onclick="setSvgPanelView('code')">源码</button>
                         </div>
-                        <button id="downloadBtn" class="panel-download" style="display:none;" onclick="downloadSVG()">导出 SVG</button>
+                        <button id="downloadBtn" class="panel-download" style="display:none;" onclick="downloadSVG()">导出</button>
                     </div>
                 </div>
                 <div id="svgPreviewView" class="panel-view is-active">
@@ -789,6 +843,10 @@
     let currentLottieInstance = null;
     let globalFeatureReport = createEmptyFeatureReport();
     let currentJsonFileSize = 0;
+    let currentRawSvgOutput = '';
+    let currentCompressedSvgOutput = '';
+    let currentSvgVariant = 'raw';
+    let preferCompressedSvg = true;
     const EMPTY_JSON_PREVIEW_HTML = '<div class="empty-state">上传一个 Lottie JSON 后，这里会播放原始动画，方便和 SVG 结果对照。</div>';
     const EMPTY_SVG_PREVIEW_HTML = '<div class="empty-state">上传一个 Lottie JSON 后，这里会显示编译后的 SVG 预览。</div>';
 
@@ -851,6 +909,46 @@
             codeBtnId: 'svgCodeBtn',
             codeMode: view === 'code'
         });
+    }
+
+    function getActiveSvgOutput() {
+        const resolvedVariant = preferCompressedSvg && currentCompressedSvgOutput ? 'compressed' : 'raw';
+        currentSvgVariant = resolvedVariant;
+        return resolvedVariant === 'compressed' && currentCompressedSvgOutput
+            ? currentCompressedSvgOutput
+            : currentRawSvgOutput;
+    }
+
+    function setSvgCompression(enabled) {
+        preferCompressedSvg = Boolean(enabled);
+        currentSvgVariant = preferCompressedSvg && currentCompressedSvgOutput ? 'compressed' : 'raw';
+        renderActiveSvgOutput();
+        updateSvgVariantControls();
+    }
+
+    function toggleSvgCompression() {
+        setSvgCompression(!preferCompressedSvg);
+    }
+
+    function renderActiveSvgOutput() {
+        const activeSvg = getActiveSvgOutput();
+        const activeSize = getByteSize(activeSvg);
+        document.getElementById('output').value = activeSvg;
+        document.getElementById('preview').innerHTML = activeSvg || EMPTY_SVG_PREVIEW_HTML;
+        document.getElementById('downloadBtn').textContent = '导出';
+        updateFileSizeLabel('svgSizeLabel', activeSize);
+    }
+
+    function updateSvgVariantControls() {
+        const toggle = document.getElementById('svgCompressionToggle');
+        const hasCompressed = !!currentCompressedSvgOutput;
+        if (toggle) {
+            toggle.disabled = !currentRawSvgOutput;
+            toggle.setAttribute('aria-checked', String(preferCompressedSvg));
+            toggle.title = hasCompressed
+                ? (preferCompressedSvg ? '当前显示压缩版 SVG' : '当前显示原始版 SVG')
+                : '当前素材暂无更小的压缩版，显示原始 SVG';
+        }
     }
 
     function handleFileSelect(event) {
@@ -1115,17 +1213,20 @@
         globalGradientCache = new Map();
 
         const bodyHTML = renderComposition(data);
-        const finalSVG = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 ${data.w || 0} ${data.h || 0}" width="100%" height="100%">
+        const finalSVG = minifySvgMarkup(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${data.w || 0} ${data.h || 0}" width="100%" height="100%">
   <defs>
     ${defsHTML}
   </defs>
   ${bodyHTML}
-</svg>`;
+</svg>`);
+        const compressedSVG = compressSvgMarkup(finalSVG);
+        currentRawSvgOutput = finalSVG;
+        currentCompressedSvgOutput = compressedSVG && getByteSize(compressedSVG) < getByteSize(finalSVG) ? compressedSVG : '';
+        currentSvgVariant = preferCompressedSvg && currentCompressedSvgOutput ? 'compressed' : 'raw';
 
-        document.getElementById('output').value = finalSVG;
-        document.getElementById('preview').innerHTML = finalSVG;
+        renderActiveSvgOutput();
+        updateSvgVariantControls();
         document.getElementById('downloadBtn').style.display = 'inline-block';
-        updateFileSizeLabel('svgSizeLabel', getByteSize(finalSVG));
         updateMeta(data);
     }
 
@@ -1188,7 +1289,9 @@
     }
 
     function sampleAnimationValues(sampler, options = {}) {
-        const sampleFrames = buildLocalSampleFrames(options.sources, options.extraFrames);
+        const baseFrames = Array.isArray(options.sampleFrames) && options.sampleFrames.length
+            ? normalizeFrameTimes(options.sampleFrames, options.extraFrames)
+            : buildLocalSampleFrames(options.sources, options.extraFrames);
         const cache = new Map();
         const getSampleValue = frame => {
             const cacheKey = frame.toFixed(4);
@@ -1197,8 +1300,8 @@
         };
 
         const refinedFrames = options.enableAdaptive === false
-            ? sampleFrames
-            : refineSampleFrames(sampleFrames, getSampleValue, options);
+            ? baseFrames
+            : refineSampleFrames(baseFrames, getSampleValue, options);
 
         return {
             sampleFrames: refinedFrames,
@@ -1424,6 +1527,11 @@
     function applyTransformChain(transformData, innerHTML, key) {
         const transformSteps = buildTransformSteps(transformData, key);
         if (!transformSteps.length) return innerHTML;
+        const sharedTransformSampleFrames = buildLocalSampleFrames(transformSteps.map(step => step.options && step.options.sources));
+        transformSteps.forEach(step => {
+            if (!step.options) step.options = {};
+            if (!step.options.sampleFrames) step.options.sampleFrames = sharedTransformSampleFrames;
+        });
 
         const operations = transformSteps.map(step => buildTransformOperation(step)).filter(Boolean);
         return wrapSequentialTransformSteps(innerHTML, operations);
@@ -1704,18 +1812,15 @@
     function renderGeometryEntry(entry, key) {
         if (!entry || entry.type !== 'geometry') return '';
 
-        const pathId = getUID('path');
         let animateD = '';
         if (entry.isAnimated && entry.supportsAnimatedD) {
             animateD = buildAnimateElement('d', entry.dValues, {
-                id: `${pathId}_d`,
-                extraAttributes: ' additive="replace"',
                 sampleFrames: entry.sampleFrames,
                 signatureExtractor: extractPathSignature
             });
         }
 
-        return `<path d="${entry.dValues[0]}" id="${pathId}">${animateD}</path>`;
+        return `<path d="${entry.dValues[0]}">${animateD}</path>`;
     }
 
     function renderCombinedGeometryRun(entries, key) {
@@ -1731,18 +1836,15 @@
         const firstD = combinedDValues[0] || '';
         if (!firstD) return '';
 
-        const pathId = getUID('path');
         let animateD = '';
         if (!allValuesEqual(combinedDValues)) {
             animateD = buildAnimateElement('d', combinedDValues, {
-                id: `${pathId}_d`,
-                extraAttributes: ' additive="replace"',
                 sampleFrames: combinedSampleFrames,
                 signatureExtractor: extractPathSignature
             });
         }
 
-        return `<path d="${firstD}" id="${pathId}">${animateD}</path>`;
+        return `<path d="${firstD}">${animateD}</path>`;
     }
 
     function canAnimateGeometry(shape) {
@@ -1817,7 +1919,8 @@
         }
 
         if (activeFillItem) {
-            attrs.push(`fill-rule="${mapFillRule(activeFillItem.r)}"`);
+            const fillRule = mapFillRule(activeFillItem.r);
+            if (fillRule !== 'nonzero') attrs.push(`fill-rule="${fillRule}"`);
             const fillOpacityAnimation = sampleAnimationValues(frame => {
                 return clamp(getScalarValue(getPropertyValue(activeFillItem.o, frame, 100), 100) / 100, 0, 1);
             }, {
@@ -1826,7 +1929,9 @@
                 enableAdaptive: false
             });
             const fillOpacity = fillOpacityAnimation.values.map(formatNumber);
-            attrs.push(`fill-opacity="${fillOpacity[0]}"`);
+            if (fillOpacity[0] !== '1' || !allValuesEqual(fillOpacity)) {
+                attrs.push(`fill-opacity="${fillOpacity[0]}"`);
+            }
             if (!allValuesEqual(fillOpacity)) {
                 animations += buildAnimateElement('fill-opacity', fillOpacity, {
                     id: `${key}_fillOpacity`,
@@ -1869,8 +1974,12 @@
             const strokeOpacityValues = strokeOpacityAnimation.values.map(formatNumber);
 
             attrs.push(`stroke="${strokeValues[0]}"`);
-            attrs.push(`stroke-width="${strokeWidthValues[0]}"`);
-            attrs.push(`stroke-opacity="${strokeOpacityValues[0]}"`);
+            if (strokeWidthValues[0] !== '1' || !allValuesEqual(strokeWidthValues)) {
+                attrs.push(`stroke-width="${strokeWidthValues[0]}"`);
+            }
+            if (strokeOpacityValues[0] !== '1' || !allValuesEqual(strokeOpacityValues)) {
+                attrs.push(`stroke-opacity="${strokeOpacityValues[0]}"`);
+            }
 
             if (activeStrokeItem.lc) attrs.push(`stroke-linecap="${lineCap(activeStrokeItem.lc)}"`);
             if (activeStrokeItem.lj) attrs.push(`stroke-linejoin="${lineJoin(activeStrokeItem.lj)}"`);
@@ -1950,7 +2059,11 @@
         for (let index = 0; index < firstState.stops.length; index++) {
             const { offsetValues, colorValues, opacityValues } = stopAnimationValues[index];
 
-            gradientHTML += `\n  <stop offset="${formatNumber(offsetValues[0])}%" stop-color="${colorValues[0]}" stop-opacity="${formatNumber(opacityValues[0])}">`;
+            const initialStopOpacity = formatNumber(opacityValues[0]);
+            const stopOpacityAttr = initialStopOpacity !== '1' || !allValuesEqual(opacityValues)
+                ? ` stop-opacity="${initialStopOpacity}"`
+                : '';
+            gradientHTML += `\n  <stop offset="${formatNumber(offsetValues[0])}%" stop-color="${colorValues[0]}"${stopOpacityAttr}>`;
             if (!allValuesEqual(offsetValues)) gradientHTML += buildAnimateElement('offset', offsetValues, { id: `${key}_offset_${index}`, formatter: value => `${formatNumber(value)}%`, tolerance: 0.05, sampleFrames: gradientSampleFrames });
             if (!allValuesEqual(colorValues)) gradientHTML += buildAnimateElement('stop-color', colorValues, { id: `${key}_color_${index}`, sampleFrames: gradientSampleFrames });
             if (!allValuesEqual(opacityValues)) gradientHTML += buildAnimateElement('stop-opacity', opacityValues, { id: `${key}_opacity_${index}`, sampleFrames: gradientSampleFrames });
@@ -2147,7 +2260,7 @@
 
     function wrapStaticTransformSteps(innerHTML, staticSteps, matrix) {
         const matrixValue = formatTransformValue('matrix', matrix);
-        const listValue = staticSteps.map(step => `${step.type}(${formatTransformValue(step.type, step.value)})`).join(' ');
+        const listValue = staticSteps.slice().reverse().map(step => `${step.type}(${formatTransformValue(step.type, step.value)})`).join(' ');
         const useMatrix = staticSteps.length > 1 && matrixValue.length + 'matrix()'.length < listValue.length;
         const transformValue = useMatrix ? `matrix(${matrixValue})` : listValue;
         return `<g transform="${transformValue}">${innerHTML}</g>`;
@@ -2328,22 +2441,93 @@
             ? reduceInterpolableSamples(comparable, options.tolerance ?? getAnimationTolerance(options.attributeName), sampleFrames)
             : reduceDiscreteSamples(values);
 
+        const pruned = pruneSerializedAnimationSamples(
+            keepIndices.map(index => sampleKeyTimes[index] || sampleKeyTimes[0] || '0'),
+            keepIndices.map(index => formatter(values[index])),
+            options.attributeName
+        );
+
         return {
-            keyTimes: keepIndices.map(index => sampleKeyTimes[index] || sampleKeyTimes[0] || '0').join(';'),
-            values: keepIndices.map(index => formatter(values[index]))
+            keyTimes: pruned.keyTimes.join(';'),
+            values: pruned.values
         };
     }
 
+    function pruneSerializedAnimationSamples(keyTimes, values, attributeName) {
+        if (!Array.isArray(values) || values.length <= 2) {
+            return {
+                keyTimes: keyTimes || [],
+                values: values || []
+            };
+        }
+
+        let keepIndices = reduceDuplicateSerializedSamples(values);
+        let reducedValues = keepIndices.map(index => values[index]);
+        let reducedKeyTimes = keepIndices.map(index => keyTimes[index]);
+
+        if (shouldPruneInterpolableSerializedSamples(attributeName) && reducedValues.length > 2) {
+            const comparable = buildComparableSamples(reducedValues, { attributeName });
+            if (comparable) {
+                const numericTimes = reducedKeyTimes.map(value => Number(value));
+                const prunedIndices = reduceInterpolableSamples(
+                    comparable,
+                    getSerializedAnimationTolerance(attributeName),
+                    numericTimes
+                );
+                reducedValues = prunedIndices.map(index => reducedValues[index]);
+                reducedKeyTimes = prunedIndices.map(index => reducedKeyTimes[index]);
+            }
+        }
+
+        return {
+            keyTimes: reducedKeyTimes,
+            values: reducedValues
+        };
+    }
+
+    function reduceDuplicateSerializedSamples(values) {
+        if (!Array.isArray(values) || values.length <= 2) return values.map((_, index) => index);
+
+        const keep = [0];
+        for (let index = 1; index < values.length - 1; index++) {
+            const prev = values[index - 1];
+            const current = values[index];
+            const next = values[index + 1];
+            if (!(current === prev && current === next)) {
+                keep.push(index);
+            }
+        }
+        keep.push(values.length - 1);
+        return keep;
+    }
+
+    function shouldPruneInterpolableSerializedSamples(attributeName) {
+        return ['translate', 'scale', 'rotate', 'skewX', 'opacity', 'fill-opacity', 'stroke-opacity', 'stroke-width', 'offset'].includes(attributeName);
+    }
+
+    function getSerializedAnimationTolerance(attributeName) {
+        if (attributeName === 'translate') return 0.0005;
+        if (attributeName === 'scale') return 0.00005;
+        if (attributeName === 'rotate' || attributeName === 'skewX') return 0.0005;
+        if (attributeName && attributeName.includes('opacity')) return 0.00005;
+        return 0.0005;
+    }
+
     function serializeAnimateTransformElement(type, key, animation) {
-        let attrs = ` id="${key}" attributeName="transform" type="${type}" dur="${globalDuration}s" repeatCount="indefinite" calcMode="${animation.calcMode || 'linear'}" keyTimes="${animation.keyTimes}" values="${animation.values.join(';')}"`;
+        const calcMode = animation.calcMode || 'linear';
+        let attrs = ` attributeName="transform" type="${type}" dur="${globalDuration}s" repeatCount="indefinite"`;
+        if (calcMode !== 'linear') attrs += ` calcMode="${calcMode}"`;
+        attrs += ` keyTimes="${animation.keyTimes}" values="${animation.values.join(';')}"`;
         if (animation.keySplines) attrs += ` keySplines="${animation.keySplines}"`;
         return `<animateTransform${attrs} />`;
     }
 
     function serializeAnimateElement(attributeName, animation, options = {}) {
-        const idAttr = options.id ? ` id="${options.id}"` : '';
         const extra = options.extraAttributes || '';
-        let attrs = `${idAttr} attributeName="${attributeName}" dur="${globalDuration}s" repeatCount="indefinite" calcMode="${animation.calcMode || options.calcMode || 'linear'}" keyTimes="${animation.keyTimes}" values="${animation.values.join(';')}"`;
+        const calcMode = animation.calcMode || options.calcMode || 'linear';
+        let attrs = ` attributeName="${attributeName}" dur="${globalDuration}s" repeatCount="indefinite"`;
+        if (calcMode !== 'linear') attrs += ` calcMode="${calcMode}"`;
+        attrs += ` keyTimes="${animation.keyTimes}" values="${animation.values.join(';')}"`;
         if (animation.keySplines) attrs += ` keySplines="${animation.keySplines}"`;
         return `<animate${attrs}${extra} />`;
     }
@@ -2918,6 +3102,61 @@
         return `${value}`;
     }
 
+    function minifySvgMarkup(svg) {
+        return `${svg || ''}`.replace(/>\s+</g, '><').trim();
+    }
+
+    function compressSvgMarkup(svg) {
+        let compressed = minifySvgMarkup(svg);
+        compressed = minifyColorTokens(compressed);
+        compressed = minifyPathAttributes(compressed);
+        compressed = minifyAnimatedPathValues(compressed);
+        compressed = minifyNumericTokens(compressed);
+        compressed = compressed.replace(/\s{2,}/g, ' ');
+        return compressed;
+    }
+
+    function minifyColorTokens(svg) {
+        return `${svg || ''}`.replace(/rgb\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)/g, (_, red, green, blue) => {
+            return rgbToShortHex(Number(red), Number(green), Number(blue));
+        });
+    }
+
+    function rgbToShortHex(red, green, blue) {
+        const hex = [red, green, blue]
+            .map(value => clamp(Math.round(value), 0, 255).toString(16).padStart(2, '0'))
+            .join('');
+        if (hex[0] === hex[1] && hex[2] === hex[3] && hex[4] === hex[5]) {
+            return `#${hex[0]}${hex[2]}${hex[4]}`;
+        }
+        return `#${hex}`;
+    }
+
+    function minifyPathAttributes(svg) {
+        return `${svg || ''}`.replace(/\sd="([^"]*)"/g, (_, value) => ` d="${minifyPathData(value)}"`);
+    }
+
+    function minifyAnimatedPathValues(svg) {
+        return `${svg || ''}`.replace(/(<animate\b[^>]*attributeName="d"[^>]*values=")([^"]*)(")/g, (_, prefix, values, suffix) => {
+            const minifiedValues = values.split(';').map(minifyPathData).join(';');
+            return `${prefix}${minifiedValues}${suffix}`;
+        });
+    }
+
+    function minifyPathData(value) {
+        return `${value || ''}`
+            .replace(/\s+/g, ' ')
+            .replace(/\s*([MLCQZ])\s*/gi, '$1')
+            .replace(/(\d)\s-([.\d])/g, '$1-$2')
+            .trim();
+    }
+
+    function minifyNumericTokens(svg) {
+        return `${svg || ''}`
+            .replace(/(^|[^\d])(-?)0\.(\d+)/g, (_, prefix, sign, fraction) => `${prefix}${sign}.${fraction}`)
+            .replace(/(;| |,|\()(-?)0\.(\d+)/g, (_, prefix, sign, fraction) => `${prefix}${sign}.${fraction}`);
+    }
+
     function formatNumber(value) {
         return Number(value).toFixed(3).replace(/\.?0+$/, '');
     }
@@ -2939,12 +3178,12 @@
     }
 
     function downloadSVG() {
-        const svgContent = document.getElementById('output').value;
+        const svgContent = getActiveSvgOutput();
         const blob = new Blob([svgContent], { type: 'image/svg+xml' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = 'compiled-animation.svg';
+        a.download = currentSvgVariant === 'compressed' ? 'compiled-animation.min.svg' : 'compiled-animation.svg';
         a.click();
     }
 
@@ -3022,6 +3261,10 @@
         destroyLottiePreview();
         currentJsonFileSize = 0;
         globalFeatureReport = createEmptyFeatureReport();
+        currentRawSvgOutput = '';
+        currentCompressedSvgOutput = '';
+        preferCompressedSvg = true;
+        currentSvgVariant = 'raw';
 
         document.getElementById('fileInput').value = '';
         document.getElementById('jsonOutput').value = '';
@@ -3038,6 +3281,7 @@
         resetFeatureReport();
         setJsonPanelView('preview');
         setSvgPanelView('preview');
+        updateSvgVariantControls();
         toggleClearButton(false);
         updateStatus(statusMessage);
     }
