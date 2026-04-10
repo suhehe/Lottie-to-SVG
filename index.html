@@ -717,17 +717,17 @@
     <div id="appShell" class="app-shell">
         <section class="upload-section card">
             <div class="upload-shell">
-                <div id="uploadArea" class="upload-area" onclick="document.getElementById('fileInput').click()">
+                <div id="uploadArea" class="upload-area">
                     <div class="upload-copy">
                         <h1>上传 Lottie JSON</h1>
                         <p>点击选择文件，上传后会自动显示 JSON 信息、转换为 SVG 动画。</p>
                     </div>
-                    <input type="file" id="fileInput" accept=".json" style="display: none;" onchange="handleFileSelect(event)">
+                    <input type="file" id="fileInput" accept=".json" style="display: none;">
                 </div>
                 <div class="upload-toolbar">
                     <div id="statusText" class="status">等待上传 JSON 文件</div>
                     <div class="upload-toolbar-actions">
-                        <button id="clearBtn" class="button-secondary" type="button" onclick="clearWorkspace()" style="display:none;">清空</button>
+                        <button id="clearBtn" class="button-secondary" type="button" style="display:none;">清空</button>
                     </div>
                 </div>
             </div>
@@ -774,8 +774,8 @@
                     <div class="panel-actions">
                         <span id="jsonSizeLabel" class="panel-size">-</span>
                         <div class="view-switch" aria-label="Lottie JSON 面板视图切换">
-                            <button id="jsonPreviewBtn" class="view-btn is-active" type="button" onclick="setJsonPanelView('preview')">预览</button>
-                            <button id="jsonCodeBtn" class="view-btn" type="button" onclick="setJsonPanelView('code')">源码</button>
+                            <button id="jsonPreviewBtn" class="view-btn is-active" type="button">预览</button>
+                            <button id="jsonCodeBtn" class="view-btn" type="button">源码</button>
                         </div>
                     </div>
                 </div>
@@ -799,16 +799,16 @@
                     <div class="panel-actions">
                         <div class="switch-control">
                             <span>压缩</span>
-                            <button id="svgCompressionToggle" class="switch-button" type="button" role="switch" aria-checked="true" aria-label="切换 SVG 压缩输出" onclick="toggleSvgCompression()">
+                            <button id="svgCompressionToggle" class="switch-button" type="button" role="switch" aria-checked="true" aria-label="切换 SVG 压缩输出">
                                 <span class="switch-thumb"></span>
                             </button>
                         </div>
                         <span id="svgSizeLabel" class="panel-size">-</span>
                         <div class="view-switch" aria-label="SVG 面板视图切换">
-                            <button id="svgPreviewBtn" class="view-btn is-active" type="button" onclick="setSvgPanelView('preview')">预览</button>
-                            <button id="svgCodeBtn" class="view-btn" type="button" onclick="setSvgPanelView('code')">源码</button>
+                            <button id="svgPreviewBtn" class="view-btn is-active" type="button">预览</button>
+                            <button id="svgCodeBtn" class="view-btn" type="button">源码</button>
                         </div>
-                        <button id="downloadBtn" class="panel-download" style="display:none;" onclick="downloadSVG()">导出</button>
+                        <button id="downloadBtn" class="panel-download" style="display:none;">导出</button>
                     </div>
                 </div>
                 <div id="svgPreviewView" class="panel-view is-active">
@@ -827,6 +827,11 @@
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/bodymovin/5.12.2/lottie.min.js"></script>
-<script src="./scripts/app.bundle.js"></script>
+<script src="./scripts/state.js"></script>
+<script src="./scripts/shared.js"></script>
+<script src="./scripts/feature-analysis.js"></script>
+<script src="./scripts/ui.js"></script>
+<script src="./scripts/compiler.js"></script>
+<script src="./scripts/app.js"></script>
 </body>
 </html>

@@ -1,0 +1,2051 @@
+(function () {
+    const LC = window.LottieCompiler || (window.LottieCompiler = {});
+    const state = LC.state;
+    const ui = LC.ui;
+
+    let globalAssets = {};
+    let globalFPS = 30;
+    let globalDuration = 0;
+    let globalFrameStart = 0;
+    let globalFrameCount = 1;
+    let globalSampleFrames = [0, 1];
+    let globalKeyTimes = "0;1";
+    let globalKeyTimeValues = ["0", "1"];
+    let globalKeyTimeNumbers = [0, 1];
+    let defsHTML = "";
+    let globalGradientCache = new Map();
+
+    const ELLIPSE_KAPPA = 0.5522847498307936;
+
+    function getUID(prefix) {
+        return LC.getUID(prefix);
+    }
+
+    function updateStatus(message) {
+        return ui.updateStatus(message);
+    }
+
+    function renderActiveSvgOutput() {
+        return ui.renderActiveSvgOutput();
+    }
+
+    function updateSvgVariantControls() {
+        return ui.updateSvgVariantControls();
+    }
+
+    function updateMeta(data) {
+        return ui.updateMeta(data);
+    }
+
+    function getByteSize(text) {
+        return ui.getByteSize(text);
+    }
+
+    async function compileLottie(data, fileName = '') {
+        try {
+            updateStatus('正在编译 SVG...');
+            compileLottieFallback(data);
+            updateStatus(fileName ? `已完成 SVG 编译: ${fileName}` : '已完成 SVG 编译');
+            return { mode: 'parser' };
+        } catch (error) {
+            console.error('Error during compilation:', error);
+            alert('An error occurred during compilation. Check the console for details.');
+            updateStatus('编译失败，请查看控制台日志');
+            throw error;
+        }
+    }
+
+    function compileLottieFallback(data) {
+        state.idCounter = 0;
+        globalFPS = data.fr || 30;
+        globalFrameStart = data.ip || 0;
+        globalFrameCount = Math.max(1, Math.round((data.op || 1) - globalFrameStart));
+        globalDuration = (globalFrameCount / globalFPS).toFixed(3);
+
+        globalAssets = {};
+        (data.assets || []).forEach(asset => {
+            globalAssets[asset.id] = asset;
+        });
+        globalSampleFrames = buildSampleFrames(data);
+        globalKeyTimeNumbers = globalSampleFrames.map(frame => {
+            return (frame - globalFrameStart) / globalFrameCount;
+        });
+        globalKeyTimeValues = globalKeyTimeNumbers.map(value => formatNumber(value));
+        globalKeyTimes = globalKeyTimeValues.join(';');
+        defsHTML = '';
+        globalGradientCache = new Map();
+
+        const bodyHTML = renderComposition(data);
+        const finalSVG = minifySvgMarkup(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${data.w || 0} ${data.h || 0}" width="100%" height="100%">
+  <defs>
+    ${defsHTML}
+  </defs>
+  ${bodyHTML}
+</svg>`);
+        const compressedSVG = compressSvgMarkup(finalSVG);
+        state.currentRawSvgOutput = finalSVG;
+        state.currentCompressedSvgOutput = compressedSVG && getByteSize(compressedSVG) < getByteSize(finalSVG)
+            ? compressedSVG
+            : '';
+        state.currentSvgVariant = state.preferCompressedSvg && state.currentCompressedSvgOutput ? 'compressed' : 'raw';
+
+        renderActiveSvgOutput();
+        updateSvgVariantControls();
+        document.getElementById('downloadBtn').style.display = 'inline-block';
+        updateMeta(data);
+    }
+
+    function buildSampleFrames(data) {
+        const frameTimes = [];
+        for (let frame = 0; frame <= globalFrameCount; frame++) {
+            frameTimes.push(globalFrameStart + frame);
+        }
+
+        collectAnimatedTimes(data, frameTimes, new Set());
+
+        return normalizeFrameTimes(frameTimes);
+    }
+
+    function normalizeFrameTimes(frameTimes, extraFrames = []) {
+        const rangeStart = globalFrameStart;
+        const rangeEnd = globalFrameStart + globalFrameCount;
+        const normalized = frameTimes
+            .concat(extraFrames)
+            .map(value => Number(value))
+            .filter(value => Number.isFinite(value) && value >= rangeStart && value <= rangeEnd)
+            .sort((left, right) => left - right);
+
+        const unique = [];
+        normalized.forEach(value => {
+            if (!unique.length || Math.abs(unique[unique.length - 1] - value) > 0.0001) {
+                unique.push(value);
+            }
+        });
+
+        if (!unique.length || Math.abs(unique[0] - rangeStart) > 0.0001) unique.unshift(rangeStart);
+        if (Math.abs(unique[unique.length - 1] - rangeEnd) > 0.0001) unique.push(rangeEnd);
+        return unique;
+    }
+
+    function normalizeAnimationSources(sources) {
+        if (!Array.isArray(sources)) return sources ? [sources] : [];
+        const flattened = [];
+
+        sources.forEach(source => {
+            if (Array.isArray(source)) {
+                source.forEach(entry => {
+                    if (entry) flattened.push(entry);
+                });
+                return;
+            }
+            if (source) flattened.push(source);
+        });
+
+        return flattened;
+    }
+
+    function buildLocalSampleFrames(sources, extraFrames = []) {
+        const frameTimes = [globalFrameStart, globalFrameStart + globalFrameCount];
+        const visited = new Set();
+        normalizeAnimationSources(sources).forEach(source => {
+            collectAnimatedTimes(source, frameTimes, visited);
+        });
+        return normalizeFrameTimes(frameTimes, extraFrames);
+    }
+
+    function sampleAnimationValues(sampler, options = {}) {
+        const baseFrames = Array.isArray(options.sampleFrames) && options.sampleFrames.length
+            ? normalizeFrameTimes(options.sampleFrames, options.extraFrames)
+            : buildLocalSampleFrames(options.sources, options.extraFrames);
+        const cache = new Map();
+        const getSampleValue = frame => {
+            const cacheKey = frame.toFixed(4);
+            if (!cache.has(cacheKey)) cache.set(cacheKey, sampler(frame));
+            return cache.get(cacheKey);
+        };
+
+        const refinedFrames = options.enableAdaptive === false
+            ? baseFrames
+            : refineSampleFrames(baseFrames, getSampleValue, options);
+
+        return {
+            sampleFrames: refinedFrames,
+            values: refinedFrames.map(frame => getSampleValue(frame))
+        };
+    }
+
+    function refineSampleFrames(sampleFrames, getValue, options = {}) {
+        if (!Array.isArray(sampleFrames) || sampleFrames.length <= 2) return sampleFrames;
+
+        const minFrameStep = options.minFrameStep ?? 0.25;
+        const maxDepth = options.maxDepth ?? 7;
+        const keep = new Set(sampleFrames);
+
+        function decimate(startFrame, endFrame, depth) {
+            if (depth <= 0 || Math.abs(endFrame - startFrame) <= minFrameStep) return;
+
+            const midFrame = (startFrame + endFrame) / 2;
+            if (Math.abs(midFrame - startFrame) <= minFrameStep || Math.abs(endFrame - midFrame) <= minFrameStep) return;
+
+            const startValue = getValue(startFrame);
+            const midValue = getValue(midFrame);
+            const endValue = getValue(endFrame);
+
+            if (!areSampleSignaturesCompatible([startValue, midValue, endValue], options)) return;
+
+            const startComparable = toComparableSample(startValue, options);
+            const midComparable = toComparableSample(midValue, options);
+            const endComparable = toComparableSample(endValue, options);
+            if (startComparable == null || midComparable == null || endComparable == null) return;
+
+            const expectedMid = interpolateValue(startComparable, endComparable, 0.5);
+            const error = measureComparableDistance(midComparable, expectedMid);
+            const tolerance = options.tolerance ?? getAnimationTolerance(options.attributeName);
+
+            if (error > tolerance) {
+                keep.add(midFrame);
+                decimate(startFrame, midFrame, depth - 1);
+                decimate(midFrame, endFrame, depth - 1);
+            }
+        }
+
+        for (let index = 0; index < sampleFrames.length - 1; index++) {
+            decimate(sampleFrames[index], sampleFrames[index + 1], maxDepth);
+        }
+
+        return normalizeFrameTimes(Array.from(keep));
+    }
+
+    function areSampleSignaturesCompatible(values, options = {}) {
+        if (typeof options.signatureExtractor !== 'function') return true;
+        const signatures = values.map(value => options.signatureExtractor(value));
+        return signatures.every(signature => signature != null && signature === signatures[0]);
+    }
+
+    function toComparableSample(value, options = {}) {
+        if (typeof options.toComparable === 'function') return options.toComparable(value);
+
+        if (options.attributeName === 'd') return parsePathComparable(value);
+        if (['fill', 'stroke', 'stop-color'].includes(options.attributeName)) return parseRGBComparable(value);
+
+        return parseNumericComparable(value);
+    }
+
+    function getKeyTimeValues(sampleFrames) {
+        const frames = Array.isArray(sampleFrames) && sampleFrames.length
+            ? sampleFrames
+            : [globalFrameStart, globalFrameStart + globalFrameCount];
+        return frames.map(frame => formatNumber((frame - globalFrameStart) / globalFrameCount));
+    }
+
+    function collectAnimatedTimes(value, frameTimes, visited) {
+        if (!value || typeof value !== 'object') return;
+        if (visited.has(value)) return;
+        visited.add(value);
+
+        if (value.a === 1 && Array.isArray(value.k) && value.k.some(keyframe => keyframe && typeof keyframe === 'object' && keyframe.t != null)) {
+            value.k.forEach(keyframe => {
+                if (keyframe && keyframe.t != null) frameTimes.push(keyframe.t);
+            });
+        }
+
+        if (Array.isArray(value)) {
+            value.forEach(entry => collectAnimatedTimes(entry, frameTimes, visited));
+            return;
+        }
+
+        Object.values(value).forEach(entry => collectAnimatedTimes(entry, frameTimes, visited));
+    }
+
+    function renderComposition(compData) {
+        const layers = Array.isArray(compData.layers) ? compData.layers : [];
+        const layersByInd = new Map(layers.map(layer => [layer.ind, layer]));
+        const matteConsumed = new Set();
+        let html = '';
+
+        for (let index = layers.length - 1; index >= 0; index--) {
+            if (matteConsumed.has(index)) continue;
+
+            const layer = layers[index];
+            if (!layer || layer.hd) continue;
+
+            let maskAttr = '';
+            if (layer.tt && index > 0) {
+                const matteLayer = layers[index - 1];
+                if (matteLayer) {
+                    matteConsumed.add(index - 1);
+                    const maskId = buildTrackMatte(matteLayer, layer, layersByInd, layer.tt);
+                    maskAttr = ` mask="url(#${maskId})"`;
+                }
+            }
+
+            const rendered = renderLayer(layer, layersByInd, {
+                rootLayer: layer,
+                maskAttr
+            });
+            if (rendered) html += `\n${rendered}`;
+        }
+
+        return html;
+    }
+
+    function buildTrackMatte(matteLayer, maskedLayer, layersByInd, matteType) {
+        const maskId = getUID('mask');
+        const maskContent = renderLayer(matteLayer, layersByInd, {
+            rootLayer: matteLayer
+        });
+        const maskType = matteType === 2 || matteType === 4 ? 'luminance' : 'alpha';
+        defsHTML += `\n<mask id="${maskId}" maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse" style="mask-type: ${maskType};">\n${maskContent}\n</mask>`;
+        return maskId;
+    }
+
+    function renderLayer(layer, layersByInd, options = {}) {
+        const layerContent = renderLayerVisual(layer, options.rootLayer || layer);
+        if (!layerContent) return '';
+
+        let wrapped = layerContent;
+        const chain = getParentChain(layer, layersByInd).concat(layer);
+        for (let i = chain.length - 1; i >= 0; i--) {
+            wrapped = applyTransformWrappers(
+                chain[i].ks || {},
+                wrapped,
+                `${options.rootLayer ? options.rootLayer.ind : layer.ind}_${chain[i].ind}_${i}`,
+                {
+                    includeOpacity: i === chain.length - 1,
+                    includeWindow: i === chain.length - 1,
+                    layer: i === chain.length - 1 ? layer : null
+                }
+            );
+        }
+        if (options.maskAttr) {
+            wrapped = `<g${options.maskAttr}>${wrapped}</g>`;
+        }
+        return wrapped;
+    }
+
+    function renderLayerVisual(layer, rootLayer) {
+        if (layer.ty === 0 && layer.refId && globalAssets[layer.refId] && Array.isArray(globalAssets[layer.refId].layers)) {
+            return renderComposition(globalAssets[layer.refId]);
+        }
+
+        if (layer.ty === 1) {
+            const fill = layer.sc || '#000000';
+            return `<rect x="0" y="0" width="${layer.sw || layer.w || 0}" height="${layer.sh || layer.h || 0}" fill="${fill}" />`;
+        }
+
+        if (layer.ty === 2 && layer.refId && globalAssets[layer.refId]) {
+            const asset = globalAssets[layer.refId];
+            const href = asset.e === 1 ? (asset.p || '') : `${asset.u || ''}${asset.p || ''}`;
+            return `<image href="${href}" x="0" y="0" width="${asset.w || layer.w || 0}" height="${asset.h || layer.h || 0}" preserveAspectRatio="none" />`;
+        }
+
+        if (layer.ty === 4 && Array.isArray(layer.shapes)) {
+            return renderShapeItems(layer.shapes, `layer_${rootLayer.ind}_${layer.ind}`);
+        }
+
+        return '';
+    }
+
+    function getParentChain(layer, layersByInd) {
+        const parents = [];
+        const visited = new Set();
+        let currentParent = layer.parent;
+
+        while (currentParent && layersByInd.has(currentParent) && !visited.has(currentParent)) {
+            visited.add(currentParent);
+            const parentLayer = layersByInd.get(currentParent);
+            parents.unshift(parentLayer);
+            currentParent = parentLayer.parent;
+        }
+
+        return parents;
+    }
+
+
+    function applyTransformWrappers(transformData, innerHTML, key, options = {}) {
+        let wrapped = applyTransformChain(transformData, innerHTML, key);
+
+        if (options.includeOpacity) {
+            wrapped = wrapAnimatedAttribute(wrapped, 'opacity', `opacity_${key}`, frame => {
+                const opacity = getScalarValue(getPropertyValue(transformData.o, frame, 100), 100) / 100;
+                return clamp(opacity, 0, 1);
+            }, 1, {
+                sources: [transformData.o],
+                directKeyframeProp: transformData.o,
+                mapValue: value => clamp(getScalarValue(value, 100) / 100, 0, 1)
+            });
+        }
+
+        if (options.includeWindow && options.layer) {
+            wrapped = wrapAnimatedAttribute(wrapped, 'opacity', `window_${key}`, frame => {
+                return frame >= (options.layer.ip || 0) && frame < (options.layer.op || globalFrameStart + globalFrameCount) ? 1 : 0;
+            }, 1, {
+                extraFrames: [options.layer.ip || 0, options.layer.op || (globalFrameStart + globalFrameCount)],
+                enableAdaptive: false,
+                calcMode: 'discrete'
+            });
+        }
+
+        return wrapped;
+    }
+
+    function applyTransformChain(transformData, innerHTML, key) {
+        const transformSteps = buildTransformSteps(transformData, key);
+        if (!transformSteps.length) return innerHTML;
+        const sharedTransformSampleFrames = buildLocalSampleFrames(transformSteps.map(step => step.options && step.options.sources));
+        transformSteps.forEach(step => {
+            if (!step.options) step.options = {};
+            if (!step.options.sampleFrames) step.options.sampleFrames = sharedTransformSampleFrames;
+        });
+
+        const operations = transformSteps.map(step => buildTransformOperation(step)).filter(Boolean);
+        return wrapSequentialTransformSteps(innerHTML, operations);
+    }
+
+    function getProjectedScaleValue(transformData, frame) {
+        const scale = evaluateVec2(getPropertyValue(transformData.s, frame, [100, 100, 100]), [100, 100]);
+        const orientation = evaluateVec3(getPropertyValue(transformData.or, frame, [0, 0, 0]), [0, 0, 0]);
+        const rx = getScalarValue(getPropertyValue(transformData.rx, frame, 0), 0) + orientation[0];
+        const ry = getScalarValue(getPropertyValue(transformData.ry, frame, 0), 0) + orientation[1];
+        const projectedX = (scale[0] / 100) * Math.cos((ry * Math.PI) / 180);
+        const projectedY = (scale[1] / 100) * Math.cos((rx * Math.PI) / 180);
+        return [projectedX, projectedY];
+    }
+
+    function getPlanarRotationValue(transformData, frame) {
+        const orientation = evaluateVec3(getPropertyValue(transformData.or, frame, [0, 0, 0]), [0, 0, 0]);
+        const baseRotation = getScalarValue(getPropertyValue(transformData.r || transformData.rz, frame, 0), 0);
+        return baseRotation + orientation[2];
+    }
+
+    function buildTransformSteps(transformData, key) {
+        const steps = [];
+        const staticOrientation = evaluateVec3(getPropertyValue(transformData.or, globalFrameStart, [0, 0, 0]), [0, 0, 0]);
+        const hasAnimatedOrientation = isAnimatedProperty(transformData.or) || isAnimatedProperty(transformData.rx) || isAnimatedProperty(transformData.ry);
+        const rotationProp = transformData.r || transformData.rz;
+        const initialSkew = getScalarValue(getPropertyValue(transformData.sk, globalFrameStart, 0), 0);
+        const skewAnimated = transformData && transformData.sk && transformData.sk.a === 1;
+
+        steps.push(createTransformStep('translate', `anchor_${key}`, frame => {
+            const anchor = evaluateVec2(getPropertyValue(transformData.a, frame, [0, 0, 0]));
+            return [-anchor[0], -anchor[1]];
+        }, [0, 0], {
+            sources: [transformData.a],
+            directKeyframeProp: transformData.a,
+            mapValue: value => {
+                const anchor = evaluateVec2(value, [0, 0]);
+                return [-anchor[0], -anchor[1]];
+            }
+        }));
+
+        steps.push(createTransformStep('scale', `scale_${key}`, frame => {
+            return getProjectedScaleValue(transformData, frame);
+        }, [1, 1], {
+            sources: [transformData.s, transformData.or, transformData.rx, transformData.ry],
+            directKeyframeProp: !hasAnimatedOrientation ? transformData.s : null,
+            mapValue: value => {
+                const scale = evaluateVec2(value, [100, 100]);
+                return [
+                    (scale[0] / 100) * Math.cos((staticOrientation[1] * Math.PI) / 180),
+                    (scale[1] / 100) * Math.cos((staticOrientation[0] * Math.PI) / 180)
+                ];
+            }
+        }));
+
+        if (skewAnimated || Math.abs(initialSkew) >= 0.0001) {
+            steps.push(createTransformStep('rotate', `skew_axis_in_${key}`, frame => {
+                return getScalarValue(getPropertyValue(transformData.sa, frame, 0), 0);
+            }, 0, {
+                sources: [transformData.sa],
+                directKeyframeProp: transformData.sa,
+                mapValue: value => getScalarValue(value, 0)
+            }));
+
+            steps.push(createTransformStep('skewX', `skew_value_${key}`, frame => {
+                return getScalarValue(getPropertyValue(transformData.sk, frame, 0), 0);
+            }, 0, {
+                sources: [transformData.sk],
+                directKeyframeProp: transformData.sk,
+                mapValue: value => getScalarValue(value, 0)
+            }));
+
+            steps.push(createTransformStep('rotate', `skew_axis_out_${key}`, frame => {
+                return -getScalarValue(getPropertyValue(transformData.sa, frame, 0), 0);
+            }, 0, {
+                sources: [transformData.sa],
+                directKeyframeProp: transformData.sa,
+                mapValue: value => -getScalarValue(value, 0)
+            }));
+        }
+
+        steps.push(createTransformStep('rotate', `rotate_${key}`, frame => {
+            return getPlanarRotationValue(transformData, frame);
+        }, 0, {
+            sources: [transformData.r, transformData.rz, transformData.or],
+            directKeyframeProp: !isAnimatedProperty(transformData.or) ? rotationProp : null,
+            mapValue: value => getScalarValue(value, 0) + staticOrientation[2]
+        }));
+
+        steps.push(createTransformStep('translate', `position_${key}`, frame => {
+            return getPositionValue(transformData, frame);
+        }, [0, 0], {
+            sources: [transformData.p, transformData.px, transformData.py],
+            directKeyframeProp: canDirectMapPosition(transformData) ? transformData.p : null,
+            mapValue: value => evaluateVec2(value, [0, 0]),
+            disallowSpatial: true
+        }));
+
+        return steps;
+    }
+
+    function renderShapeItems(items, scope) {
+        const segments = [];
+        let currentGeometries = [];
+        let currentStyles = createShapeStyleState();
+        let transformItem = null;
+
+        function flushSegment() {
+            if (!currentGeometries.length) {
+                currentStyles = createShapeStyleState();
+                return;
+            }
+
+            const segmentMarkup = renderShapeSegment(currentGeometries, currentStyles, `${scope}_seg_${segments.length}`);
+            if (segmentMarkup) segments.push(segmentMarkup);
+            currentGeometries = [];
+            currentStyles = createShapeStyleState();
+        }
+
+        for (let index = items.length - 1; index >= 0; index--) {
+            const item = items[index];
+            if (!item || item.hd) continue;
+
+            if (item.ty === 'tr') {
+                transformItem = item;
+                continue;
+            }
+
+            if (isShapePaintItem(item)) {
+                if (currentGeometries.length) flushSegment();
+                assignShapeStyle(currentStyles, item);
+                continue;
+            }
+
+            let geometry = null;
+            if (item.ty === 'gr') {
+                const markup = renderShapeItems(item.it || [], `${scope}_gr_${index}`);
+                geometry = markup ? { type: 'markup', markup } : null;
+            } else {
+                geometry = renderShapeGeometry(item, `${scope}_shape_${index}`);
+            }
+
+            if (geometry) currentGeometries.push(geometry);
+        }
+
+        flushSegment();
+        let markup = segments.join('\n');
+
+        if (transformItem && markup) {
+            markup = applyTransformWrappers(transformItem, markup, `${scope}_tr`, {
+                includeOpacity: true,
+                includeWindow: false
+            });
+        }
+
+        return markup;
+    }
+
+    function createShapeStyleState() {
+        return {
+            paintItems: []
+        };
+    }
+
+    function isShapePaintItem(item) {
+        return ['fl', 'gf', 'st', 'gs'].includes(item.ty);
+    }
+
+    function assignShapeStyle(styleState, item) {
+        styleState.paintItems.push(item);
+    }
+
+    function renderShapeSegment(geometries, styleState, key) {
+        let markup = renderShapeEntries(
+            geometries,
+            `${key}_entries`,
+            styleState.paintItems.some(isFillPaintItem)
+        );
+        if (!markup) return '';
+
+        const paintPasses = buildPaintPasses(styleState.paintItems);
+        if (!paintPasses.length) return markup;
+
+        return paintPasses.map((paintItem, index) => {
+            return applyPaintWrappers(
+                markup,
+                paintItem.ty === 'fl' ? paintItem : null,
+                paintItem.ty === 'gf' ? paintItem : null,
+                paintItem.ty === 'st' ? paintItem : null,
+                paintItem.ty === 'gs' ? paintItem : null,
+                `${key}_paint_${index}`
+            );
+        }).join('\n');
+    }
+
+    function isFillPaintItem(item) {
+        return item && ['fl', 'gf'].includes(item.ty);
+    }
+
+    function isStrokePaintItem(item) {
+        return item && ['st', 'gs'].includes(item.ty);
+    }
+
+    function buildPaintPasses(paintItems) {
+        const fills = paintItems.filter(isFillPaintItem);
+        const strokes = paintItems.filter(isStrokePaintItem);
+        return fills.concat(strokes);
+    }
+
+    function renderShapeEntries(entries, key, combineGeometryForFill) {
+        const markup = [];
+        let geometryRun = [];
+
+        function flushGeometryRun() {
+            if (!geometryRun.length) return;
+
+            const runKey = `${key}_run_${markup.length}`;
+            if (combineGeometryForFill && canCombineGeometryRun(geometryRun)) {
+                const combinedMarkup = renderCombinedGeometryRun(geometryRun, runKey);
+                if (combinedMarkup) markup.push(combinedMarkup);
+            } else {
+                geometryRun.forEach((entry, index) => {
+                    const entryMarkup = renderGeometryEntry(entry, `${runKey}_${index}`);
+                    if (entryMarkup) markup.push(entryMarkup);
+                });
+            }
+
+            geometryRun = [];
+        }
+
+        entries.forEach(entry => {
+            if (!entry) return;
+
+            if (entry.type === 'geometry') {
+                geometryRun.push(entry);
+                return;
+            }
+
+            flushGeometryRun();
+            if (entry.type === 'markup' && entry.markup) {
+                markup.push(entry.markup);
+            }
+        });
+
+        flushGeometryRun();
+        return markup.join('\n');
+    }
+
+    function renderShapeGeometry(shape, scope) {
+        if (!['sh', 'rc', 'el', 'sr'].includes(shape.ty)) return null;
+
+        const sampledGeometry = sampleAnimationValues(frame => {
+            return shapeGeometryToD(shape, frame);
+        }, {
+            attributeName: 'd',
+            sources: [shape],
+            signatureExtractor: extractPathSignature
+        });
+        const dValues = sampledGeometry.values;
+        const firstD = dValues[0] || '';
+        if (!firstD) return null;
+
+        return {
+            type: 'geometry',
+            shape,
+            sampleFrames: sampledGeometry.sampleFrames,
+            dValues,
+            isAnimated: !allValuesEqual(dValues),
+            supportsAnimatedD: canAnimateGeometry(shape),
+            sample: frame => shapeGeometryToD(shape, frame)
+        };
+    }
+
+    function canCombineGeometryRun(entries) {
+        return entries.every(entry => entry && entry.type === 'geometry' && (!entry.isAnimated || entry.supportsAnimatedD));
+    }
+
+    function renderGeometryEntry(entry, key) {
+        if (!entry || entry.type !== 'geometry') return '';
+
+        let animateD = '';
+        if (entry.isAnimated && entry.supportsAnimatedD) {
+            animateD = buildAnimateElement('d', entry.dValues, {
+                sampleFrames: entry.sampleFrames,
+                signatureExtractor: extractPathSignature
+            });
+        }
+
+        return `<path d="${entry.dValues[0]}">${animateD}</path>`;
+    }
+
+    function renderCombinedGeometryRun(entries, key) {
+        if (!entries.length) return '';
+
+        const combinedSampleFrames = normalizeFrameTimes(entries.flatMap(entry => entry.sampleFrames || []));
+        const combinedDValues = combinedSampleFrames.map(frame => {
+            return entries
+                .map(entry => entry.sample ? entry.sample(frame) : '')
+                .filter(Boolean)
+                .join(' ');
+        });
+        const firstD = combinedDValues[0] || '';
+        if (!firstD) return '';
+
+        let animateD = '';
+        if (!allValuesEqual(combinedDValues)) {
+            animateD = buildAnimateElement('d', combinedDValues, {
+                sampleFrames: combinedSampleFrames,
+                signatureExtractor: extractPathSignature
+            });
+        }
+
+        return `<path d="${firstD}">${animateD}</path>`;
+    }
+
+    function canAnimateGeometry(shape) {
+        if (shape.ty === 'sh') {
+            const prop = shape.ks;
+            if (!prop || prop.a !== 1 || !Array.isArray(prop.k)) return false;
+            const pathStates = [];
+            prop.k.forEach(kf => {
+                const start = unwrapPropertyValue(kf.s);
+                const end = unwrapPropertyValue(kf.e);
+                if (start) pathStates.push(start);
+                if (end) pathStates.push(end);
+            });
+            if (!pathStates.length) return false;
+            const firstCount = pathStates[0].v ? pathStates[0].v.length : 0;
+            return pathStates.every(state => state && state.v && state.v.length === firstCount);
+        }
+        return true;
+    }
+
+    function shapeGeometryToD(shape, frame) {
+        if (shape.ty === 'sh') {
+            const pathData = unwrapPropertyValue(getPropertyValue(shape.ks, frame, null));
+            return pathDataToD(pathData);
+        }
+
+        if (shape.ty === 'rc') {
+            const size = evaluateVec2(getPropertyValue(shape.s, frame, [0, 0]));
+            const position = evaluateVec2(getPropertyValue(shape.p, frame, [0, 0]));
+            const radius = clamp(getScalarValue(getPropertyValue(shape.r, frame, 0), 0), 0, Math.min(size[0], size[1]) / 2);
+            return roundedRectToD(position[0], position[1], size[0], size[1], radius);
+        }
+
+        if (shape.ty === 'el') {
+            const size = evaluateVec2(getPropertyValue(shape.s, frame, [0, 0]));
+            const position = evaluateVec2(getPropertyValue(shape.p, frame, [0, 0]));
+            return ellipseToD(position[0], position[1], size[0] / 2, size[1] / 2);
+        }
+
+        if (shape.ty === 'sr') {
+            return polystarToD(shape, frame);
+        }
+
+        return '';
+    }
+
+    function applyPaintWrappers(innerHTML, fillItem, gradientItem, strokeItem, gradientStrokeItem, key) {
+        const attrs = [];
+        let animations = '';
+        const activeFillItem = gradientItem || fillItem;
+
+        if (gradientItem) {
+            attrs.push(`fill="url(#${createGradientDef(gradientItem, key)})"`);
+        } else if (fillItem) {
+            const fillAnimation = sampleAnimationValues(frame => colorToRGB(getPropertyValue(fillItem.c, frame, [0, 0, 0])), {
+                attributeName: 'fill',
+                sources: [fillItem.c],
+                enableAdaptive: false
+            });
+            const fillValues = fillAnimation.values;
+            attrs.push(`fill="${fillValues[0]}"`);
+            if (!allValuesEqual(fillValues)) {
+                animations += buildAnimateElement('fill', fillValues, {
+                    id: `${key}_fill`,
+                    sampleFrames: fillAnimation.sampleFrames,
+                    directKeyframeProp: fillItem.c,
+                    mapValue: value => colorToRGB(value)
+                });
+            }
+        } else if (strokeItem || gradientStrokeItem) {
+            attrs.push('fill="none"');
+        }
+
+        if (activeFillItem) {
+            const fillRule = mapFillRule(activeFillItem.r);
+            if (fillRule !== 'nonzero') attrs.push(`fill-rule="${fillRule}"`);
+            const fillOpacityAnimation = sampleAnimationValues(frame => {
+                return clamp(getScalarValue(getPropertyValue(activeFillItem.o, frame, 100), 100) / 100, 0, 1);
+            }, {
+                attributeName: 'fill-opacity',
+                sources: [activeFillItem.o],
+                enableAdaptive: false
+            });
+            const fillOpacity = fillOpacityAnimation.values.map(formatNumber);
+            if (fillOpacity[0] !== '1' || !allValuesEqual(fillOpacity)) {
+                attrs.push(`fill-opacity="${fillOpacity[0]}"`);
+            }
+            if (!allValuesEqual(fillOpacity)) {
+                animations += buildAnimateElement('fill-opacity', fillOpacity, {
+                    id: `${key}_fillOpacity`,
+                    sampleFrames: fillOpacityAnimation.sampleFrames,
+                    directKeyframeProp: activeFillItem.o,
+                    mapValue: value => formatNumber(clamp(getScalarValue(value, 100) / 100, 0, 1))
+                });
+            }
+        }
+
+        const activeStrokeItem = gradientStrokeItem || strokeItem;
+        if (activeStrokeItem) {
+            const strokeGradientId = gradientStrokeItem ? createGradientDef(gradientStrokeItem, `${key}_stroke`) : null;
+            const strokeColorAnimation = strokeGradientId
+                ? {
+                    sampleFrames: [globalFrameStart, globalFrameStart + globalFrameCount],
+                    values: [`url(#${strokeGradientId})`, `url(#${strokeGradientId})`]
+                }
+                : sampleAnimationValues(frame => colorToRGB(getPropertyValue(strokeItem.c, frame, [0, 0, 0])), {
+                    attributeName: 'stroke',
+                    sources: [strokeItem.c],
+                    enableAdaptive: false
+                });
+            const strokeWidthAnimation = sampleAnimationValues(frame => {
+                return getScalarValue(getPropertyValue(activeStrokeItem.w, frame, 0), 0);
+            }, {
+                attributeName: 'stroke-width',
+                sources: [activeStrokeItem.w],
+                enableAdaptive: false
+            });
+            const strokeOpacityAnimation = sampleAnimationValues(frame => {
+                return clamp(getScalarValue(getPropertyValue(activeStrokeItem.o, frame, 100), 100) / 100, 0, 1);
+            }, {
+                attributeName: 'stroke-opacity',
+                sources: [activeStrokeItem.o],
+                enableAdaptive: false
+            });
+            const strokeValues = strokeColorAnimation.values;
+            const strokeWidthValues = strokeWidthAnimation.values.map(formatNumber);
+            const strokeOpacityValues = strokeOpacityAnimation.values.map(formatNumber);
+
+            attrs.push(`stroke="${strokeValues[0]}"`);
+            if (strokeWidthValues[0] !== '1' || !allValuesEqual(strokeWidthValues)) {
+                attrs.push(`stroke-width="${strokeWidthValues[0]}"`);
+            }
+            if (strokeOpacityValues[0] !== '1' || !allValuesEqual(strokeOpacityValues)) {
+                attrs.push(`stroke-opacity="${strokeOpacityValues[0]}"`);
+            }
+
+            if (activeStrokeItem.lc) attrs.push(`stroke-linecap="${lineCap(activeStrokeItem.lc)}"`);
+            if (activeStrokeItem.lj) attrs.push(`stroke-linejoin="${lineJoin(activeStrokeItem.lj)}"`);
+            if (activeStrokeItem.ml) attrs.push(`stroke-miterlimit="${activeStrokeItem.ml}"`);
+
+            if (!allValuesEqual(strokeValues)) {
+                animations += buildAnimateElement('stroke', strokeValues, {
+                    id: `${key}_stroke`,
+                    sampleFrames: strokeColorAnimation.sampleFrames,
+                    directKeyframeProp: strokeGradientId ? null : strokeItem.c,
+                    mapValue: value => colorToRGB(value)
+                });
+            }
+            if (!allValuesEqual(strokeWidthValues)) {
+                animations += buildAnimateElement('stroke-width', strokeWidthValues, {
+                    id: `${key}_strokeWidth`,
+                    sampleFrames: strokeWidthAnimation.sampleFrames,
+                    directKeyframeProp: activeStrokeItem.w,
+                    mapValue: value => formatNumber(getScalarValue(value, 0))
+                });
+            }
+            if (!allValuesEqual(strokeOpacityValues)) {
+                animations += buildAnimateElement('stroke-opacity', strokeOpacityValues, {
+                    id: `${key}_strokeOpacity`,
+                    sampleFrames: strokeOpacityAnimation.sampleFrames,
+                    directKeyframeProp: activeStrokeItem.o,
+                    mapValue: value => formatNumber(clamp(getScalarValue(value, 100) / 100, 0, 1))
+                });
+            }
+        }
+
+        return `<g ${attrs.join(' ')}>${animations}${innerHTML}</g>`;
+    }
+
+    function createGradientDef(item, key) {
+        const stopCount = item.g && typeof item.g.p === 'number' ? item.g.p : 0;
+        const gradientSampleFrames = buildLocalSampleFrames([item.s, item.e, item.g && item.g.k]);
+        const firstState = parseGradientState(getPropertyValue(item.g && item.g.k, gradientSampleFrames[0], []), stopCount);
+        const x1Values = gradientSampleFrames.map(frame => evaluateVec2(getPropertyValue(item.s, frame, [0, 0]))[0]);
+        const y1Values = gradientSampleFrames.map(frame => evaluateVec2(getPropertyValue(item.s, frame, [0, 0]))[1]);
+        const x2Values = gradientSampleFrames.map(frame => evaluateVec2(getPropertyValue(item.e, frame, [0, 0]))[0]);
+        const y2Values = gradientSampleFrames.map(frame => evaluateVec2(getPropertyValue(item.e, frame, [0, 0]))[1]);
+
+        const stopAnimationValues = firstState.stops.map((_, index) => {
+            return {
+                offsetValues: gradientSampleFrames.map(frame => parseGradientState(getPropertyValue(item.g && item.g.k, frame, []), stopCount).stops[index].offset),
+                colorValues: gradientSampleFrames.map(frame => parseGradientState(getPropertyValue(item.g && item.g.k, frame, []), stopCount).stops[index].color),
+                opacityValues: gradientSampleFrames.map(frame => parseGradientState(getPropertyValue(item.g && item.g.k, frame, []), stopCount).stops[index].opacity)
+            };
+        });
+
+        const gradientSignature = JSON.stringify({
+            sampleFrames: gradientSampleFrames.map(frame => formatNumber(frame)),
+            stopCount,
+            x1Values: x1Values.map(formatNumber),
+            y1Values: y1Values.map(formatNumber),
+            x2Values: x2Values.map(formatNumber),
+            y2Values: y2Values.map(formatNumber),
+            stops: stopAnimationValues.map(stop => ({
+                offsetValues: stop.offsetValues.map(formatNumber),
+                colorValues: stop.colorValues,
+                opacityValues: stop.opacityValues.map(formatNumber)
+            }))
+        });
+        if (globalGradientCache.has(gradientSignature)) {
+            return globalGradientCache.get(gradientSignature);
+        }
+
+        const gradientId = getUID('grad');
+
+        let gradientHTML = `\n<linearGradient id="${gradientId}" gradientUnits="userSpaceOnUse" x1="${formatNumber(x1Values[0])}" y1="${formatNumber(y1Values[0])}" x2="${formatNumber(x2Values[0])}" y2="${formatNumber(y2Values[0])}">`;
+        if (!allValuesEqual(x1Values)) gradientHTML += buildAnimateElement('x1', x1Values, { id: `${key}_x1`, sampleFrames: gradientSampleFrames });
+        if (!allValuesEqual(y1Values)) gradientHTML += buildAnimateElement('y1', y1Values, { id: `${key}_y1`, sampleFrames: gradientSampleFrames });
+        if (!allValuesEqual(x2Values)) gradientHTML += buildAnimateElement('x2', x2Values, { id: `${key}_x2`, sampleFrames: gradientSampleFrames });
+        if (!allValuesEqual(y2Values)) gradientHTML += buildAnimateElement('y2', y2Values, { id: `${key}_y2`, sampleFrames: gradientSampleFrames });
+
+        for (let index = 0; index < firstState.stops.length; index++) {
+            const { offsetValues, colorValues, opacityValues } = stopAnimationValues[index];
+
+            const initialStopOpacity = formatNumber(opacityValues[0]);
+            const stopOpacityAttr = initialStopOpacity !== '1' || !allValuesEqual(opacityValues)
+                ? ` stop-opacity="${initialStopOpacity}"`
+                : '';
+            gradientHTML += `\n  <stop offset="${formatNumber(offsetValues[0])}%" stop-color="${colorValues[0]}"${stopOpacityAttr}>`;
+            if (!allValuesEqual(offsetValues)) gradientHTML += buildAnimateElement('offset', offsetValues, { id: `${key}_offset_${index}`, formatter: value => `${formatNumber(value)}%`, tolerance: 0.05, sampleFrames: gradientSampleFrames });
+            if (!allValuesEqual(colorValues)) gradientHTML += buildAnimateElement('stop-color', colorValues, { id: `${key}_color_${index}`, sampleFrames: gradientSampleFrames });
+            if (!allValuesEqual(opacityValues)) gradientHTML += buildAnimateElement('stop-opacity', opacityValues, { id: `${key}_opacity_${index}`, sampleFrames: gradientSampleFrames });
+            gradientHTML += '</stop>';
+        }
+
+        gradientHTML += '\n</linearGradient>';
+        defsHTML += gradientHTML;
+        globalGradientCache.set(gradientSignature, gradientId);
+        return gradientId;
+    }
+
+    function parseGradientState(rawValue, stopCount) {
+        const raw = Array.isArray(rawValue) ? rawValue : [];
+        const colors = raw.slice(0, stopCount * 4);
+        const opacityStops = raw.slice(stopCount * 4);
+        const stops = [];
+
+        for (let index = 0; index < stopCount; index++) {
+            const offset = clamp(colors[index * 4] || 0, 0, 1) * 100;
+            const color = colorToRGB([
+                colors[index * 4 + 1] || 0,
+                colors[index * 4 + 2] || 0,
+                colors[index * 4 + 3] || 0
+            ]);
+            const opacity = opacityStops.length ? sampleOpacityStop(opacityStops, offset / 100) : 1;
+            stops.push({ offset, color, opacity });
+        }
+
+        return { stops };
+    }
+
+    function sampleOpacityStop(stops, offset) {
+        if (stops.length < 2) return 1;
+        const pairs = [];
+        for (let index = 0; index < stops.length; index += 2) {
+            pairs.push({
+                offset: clamp(stops[index] || 0, 0, 1),
+                opacity: clamp(stops[index + 1] == null ? 1 : stops[index + 1], 0, 1)
+            });
+        }
+        if (offset <= pairs[0].offset) return pairs[0].opacity;
+        if (offset >= pairs[pairs.length - 1].offset) return pairs[pairs.length - 1].opacity;
+
+        for (let index = 0; index < pairs.length - 1; index++) {
+            const current = pairs[index];
+            const next = pairs[index + 1];
+            if (offset >= current.offset && offset <= next.offset) {
+                const progress = (offset - current.offset) / Math.max(0.000001, next.offset - current.offset);
+                return current.opacity + (next.opacity - current.opacity) * progress;
+            }
+        }
+        return 1;
+    }
+
+    function polystarToD(shape, frame) {
+        const type = getScalarValue(getPropertyValue(shape.sy, frame, shape.sy || 1), shape.sy || 1);
+        const points = Math.max(2, getScalarValue(getPropertyValue(shape.pt, frame, 0), 0));
+        const position = evaluateVec2(getPropertyValue(shape.p, frame, [0, 0]));
+        const rotation = (getScalarValue(getPropertyValue(shape.r, frame, 0), 0) - 90) * Math.PI / 180;
+        const outerRadius = getScalarValue(getPropertyValue(shape.or, frame, 0), 0);
+        const innerRadius = getScalarValue(getPropertyValue(shape.ir, frame, outerRadius), outerRadius);
+
+        const vertices = [];
+        if (type === 2) {
+            const count = Math.max(3, Math.round(points));
+            const step = (Math.PI * 2) / count;
+            for (let index = 0; index < count; index++) {
+                const angle = rotation + step * index;
+                vertices.push([
+                    position[0] + Math.cos(angle) * outerRadius,
+                    position[1] + Math.sin(angle) * outerRadius
+                ]);
+            }
+        } else {
+            const count = Math.max(2, Math.round(points));
+            const step = Math.PI / count;
+            for (let index = 0; index < count * 2; index++) {
+                const radius = index % 2 === 0 ? outerRadius : innerRadius;
+                const angle = rotation + step * index;
+                vertices.push([
+                    position[0] + Math.cos(angle) * radius,
+                    position[1] + Math.sin(angle) * radius
+                ]);
+            }
+        }
+
+        if (!vertices.length) return '';
+        return vertices.map((point, index) => `${index === 0 ? 'M' : 'L'} ${formatNumber(point[0])} ${formatNumber(point[1])}`).join(' ') + ' Z';
+    }
+
+    function createTransformStep(type, key, sampler, identityValue, options = {}) {
+        return { type, key, sampler, identityValue, options };
+    }
+
+    function isTransformStepAnimated(step) {
+        return normalizeAnimationSources(step && step.options && step.options.sources).some(source => isAnimatedProperty(source));
+    }
+
+    function wrapSequentialTransformSteps(innerHTML, operations) {
+        let wrapped = innerHTML;
+        let staticMatrix = createIdentityMatrix();
+        let staticSteps = [];
+
+        operations.forEach(operation => {
+            if (!operation) return;
+            const { step } = operation;
+
+            if (!operation.isAnimated) {
+                if (!valuesMatchIdentity(operation.initialValue, step.identityValue)) {
+                    staticMatrix = multiplyMatrices(getTransformMatrix(step.type, operation.initialValue), staticMatrix);
+                    staticSteps.push({
+                        type: step.type,
+                        value: operation.initialValue
+                    });
+                }
+                return;
+            }
+
+            if (staticSteps.length) {
+                wrapped = wrapStaticTransformSteps(wrapped, staticSteps, staticMatrix);
+                staticMatrix = createIdentityMatrix();
+                staticSteps = [];
+            }
+
+            wrapped = wrapTransformOperation(wrapped, operation);
+        });
+
+        if (staticSteps.length) {
+            wrapped = wrapStaticTransformSteps(wrapped, staticSteps, staticMatrix);
+        }
+
+        return wrapped;
+    }
+
+    function buildTransformOperation(step) {
+        if (!step) return null;
+
+        const formatter = value => formatTransformValue(step.type, value);
+        const directAnimation = buildDirectKeyframeAnimation(step.options && step.options.directKeyframeProp, {
+            formatter,
+            mapValue: step.options && step.options.mapValue,
+            disallowSpatial: step.options && step.options.disallowSpatial
+        });
+
+        if (directAnimation) {
+            const isAnimated = directAnimation.values.length > 1 && !allValuesEqual(directAnimation.values);
+            return {
+                step,
+                initialValue: directAnimation.initialValue,
+                isAnimated,
+                mode: 'direct',
+                animation: directAnimation
+            };
+        }
+
+        const animation = sampleAnimationValues(step.sampler, {
+            ...(step.options || {}),
+            attributeName: step.options && step.options.attributeName ? step.options.attributeName : step.type,
+            tolerance: step.options && step.options.tolerance != null
+                ? step.options.tolerance
+                : getTransformAnimationTolerance(step.type)
+        });
+        const sampledValues = animation.values;
+        const stringValues = sampledValues.map(formatter);
+
+        return {
+            step,
+            initialValue: sampledValues[0],
+            isAnimated: !allValuesEqual(stringValues),
+            mode: 'sampled',
+            sampledValues,
+            sampleFrames: animation.sampleFrames
+        };
+    }
+
+    function wrapTransformOperation(innerHTML, operation) {
+        const transformAttr = ` transform="${operation.step.type}(${formatTransformValue(operation.step.type, operation.initialValue)})"`;
+        let animateHTML = '';
+
+        if (operation.mode === 'direct') {
+            if (operation.animation.values.length > 1 && !allValuesEqual(operation.animation.values)) {
+                animateHTML = serializeAnimateTransformElement(operation.step.type, operation.step.key, operation.animation);
+            }
+        } else if (operation.sampledValues && operation.sampledValues.length > 1) {
+            animateHTML = buildAnimateTransformElement(operation.step.type, operation.sampledValues, operation.step.key, {
+                sampleFrames: operation.sampleFrames,
+                tolerance: operation.step.options && operation.step.options.tolerance
+            });
+        }
+
+        return `<g${transformAttr}>${animateHTML}${innerHTML}</g>`;
+    }
+
+    function wrapStaticTransformSteps(innerHTML, staticSteps, matrix) {
+        const matrixValue = formatTransformValue('matrix', matrix);
+        const listValue = staticSteps.slice().reverse().map(step => `${step.type}(${formatTransformValue(step.type, step.value)})`).join(' ');
+        const useMatrix = staticSteps.length > 1 && matrixValue.length + 'matrix()'.length < listValue.length;
+        const transformValue = useMatrix ? `matrix(${matrixValue})` : listValue;
+        return `<g transform="${transformValue}">${innerHTML}</g>`;
+    }
+
+    function getTransformMatrix(type, value) {
+        if (type === 'translate') {
+            const position = evaluateVec2(value, [0, 0]);
+            return [1, 0, 0, 1, position[0], position[1]];
+        }
+        if (type === 'scale') {
+            const scale = evaluateVec2(value, [1, 1]);
+            return [scale[0], 0, 0, scale[1], 0, 0];
+        }
+        if (type === 'rotate') {
+            const angle = (Number(value) || 0) * Math.PI / 180;
+            const cos = Math.cos(angle);
+            const sin = Math.sin(angle);
+            return [cos, sin, -sin, cos, 0, 0];
+        }
+        if (type === 'skewX') {
+            const angle = (Number(value) || 0) * Math.PI / 180;
+            return [1, 0, Math.tan(angle), 1, 0, 0];
+        }
+        if (type === 'matrix') {
+            return Array.isArray(value) && value.length === 6 ? value.slice() : createIdentityMatrix();
+        }
+        return createIdentityMatrix();
+    }
+
+    function multiplyMatrices(left, right) {
+        return [
+            left[0] * right[0] + left[2] * right[1],
+            left[1] * right[0] + left[3] * right[1],
+            left[0] * right[2] + left[2] * right[3],
+            left[1] * right[2] + left[3] * right[3],
+            left[0] * right[4] + left[2] * right[5] + left[4],
+            left[1] * right[4] + left[3] * right[5] + left[5]
+        ];
+    }
+
+    function createIdentityMatrix() {
+        return [1, 0, 0, 1, 0, 0];
+    }
+
+    function isIdentityMatrix(matrix) {
+        return Array.isArray(matrix) && valuesMatchIdentity(matrix, createIdentityMatrix());
+    }
+
+    function wrapAnimatedTransform(innerHTML, type, key, sampler, identityValue, options = {}) {
+        const formatter = value => formatTransformValue(type, value);
+        const directAnimation = buildDirectKeyframeAnimation(options.directKeyframeProp, {
+            formatter,
+            mapValue: options.mapValue,
+            disallowSpatial: options.disallowSpatial
+        });
+
+        if (directAnimation) {
+            if (allValuesEqual(directAnimation.values) && valuesMatchIdentity(directAnimation.initialValue, identityValue)) {
+                return innerHTML;
+            }
+
+            const transformAttr = ` transform="${type}(${directAnimation.values[0]})"`;
+            const animateHTML = directAnimation.values.length <= 1 || allValuesEqual(directAnimation.values)
+                ? ''
+                : serializeAnimateTransformElement(type, key, directAnimation);
+            return `<g${transformAttr}>${animateHTML}${innerHTML}</g>`;
+        }
+
+        const animation = sampleAnimationValues(sampler, {
+            ...options,
+            attributeName: options.attributeName || type,
+            tolerance: options.tolerance ?? getTransformAnimationTolerance(type)
+        });
+        const sampledValues = animation.values;
+        const stringValues = sampledValues.map(formatter);
+        if (allValuesEqual(stringValues) && valuesMatchIdentity(sampledValues[0], identityValue)) {
+            return innerHTML;
+        }
+
+        const transformAttr = ` transform="${type}(${stringValues[0]})"`;
+        const animateHTML = allValuesEqual(stringValues) ? '' : buildAnimateTransformElement(type, sampledValues, key, {
+            sampleFrames: animation.sampleFrames,
+            tolerance: options.tolerance
+        });
+        return `<g${transformAttr}>${animateHTML}${innerHTML}</g>`;
+    }
+
+    function wrapAnimatedAttribute(innerHTML, attributeName, key, sampler, identityValue, options = {}) {
+        const formatter = options.formatter || formatAttributeValue;
+        const directAnimation = buildDirectKeyframeAnimation(options.directKeyframeProp, {
+            attributeName,
+            formatter,
+            mapValue: options.mapValue,
+            disallowSpatial: options.disallowSpatial
+        });
+
+        if (directAnimation) {
+            if (allValuesEqual(directAnimation.values) && valuesMatchIdentity(directAnimation.initialValue, identityValue)) {
+                return innerHTML;
+            }
+
+            const attr = ` ${attributeName}="${directAnimation.values[0]}"`;
+            const animateHTML = directAnimation.values.length <= 1 || allValuesEqual(directAnimation.values)
+                ? ''
+                : serializeAnimateElement(attributeName, directAnimation, {
+                    id: key,
+                    extraAttributes: options.extraAttributes || ''
+                });
+            return `<g${attr}>${animateHTML}${innerHTML}</g>`;
+        }
+
+        const animation = sampleAnimationValues(sampler, {
+            ...options,
+            attributeName
+        });
+        const sampledValues = animation.values;
+        const stringValues = sampledValues.map(formatter);
+        if (allValuesEqual(stringValues) && valuesMatchIdentity(sampledValues[0], identityValue)) {
+            return innerHTML;
+        }
+
+        const attr = ` ${attributeName}="${stringValues[0]}"`;
+        const animateHTML = allValuesEqual(stringValues) ? '' : buildAnimateElement(attributeName, sampledValues, {
+            id: key,
+            sampleFrames: animation.sampleFrames,
+            tolerance: options.tolerance,
+            toComparable: options.toComparable,
+            signatureExtractor: options.signatureExtractor,
+            calcMode: options.calcMode
+        });
+        return `<g${attr}>${animateHTML}${innerHTML}</g>`;
+    }
+
+    function buildAnimateTransformElement(type, values, key, options = {}) {
+        const optimized = optimizeAnimationSamples(values, {
+            formatter: value => formatTransformValue(type, value),
+            tolerance: options.tolerance ?? getTransformAnimationTolerance(type),
+            sampleFrames: options.sampleFrames
+        });
+        return serializeAnimateTransformElement(type, key, optimized);
+    }
+
+    function buildAnimateElement(attributeName, values, options = {}) {
+        const directAnimation = buildDirectKeyframeAnimation(options.directKeyframeProp, {
+            attributeName,
+            formatter: options.formatter || formatAttributeValue,
+            mapValue: options.mapValue,
+            disallowSpatial: options.disallowSpatial
+        });
+        if (directAnimation) {
+            return serializeAnimateElement(attributeName, directAnimation, options);
+        }
+
+        const optimized = optimizeAnimationSamples(values, {
+            attributeName,
+            formatter: options.formatter || formatAttributeValue,
+            tolerance: options.tolerance,
+            toComparable: options.toComparable,
+            signatureExtractor: options.signatureExtractor,
+            sampleFrames: options.sampleFrames
+        });
+        return serializeAnimateElement(attributeName, optimized, options);
+    }
+
+    function optimizeAnimationSamples(values, options = {}) {
+        const sampleFrames = Array.isArray(options.sampleFrames) && options.sampleFrames.length
+            ? options.sampleFrames
+            : globalSampleFrames;
+        const sampleKeyTimes = getKeyTimeValues(sampleFrames);
+        if (!Array.isArray(values) || !values.length) {
+            return { keyTimes: sampleKeyTimes.join(';'), values: [] };
+        }
+
+        const formatter = options.formatter || formatAttributeValue;
+        const comparable = buildComparableSamples(values, options);
+        const keepIndices = comparable
+            ? reduceInterpolableSamples(comparable, options.tolerance ?? getAnimationTolerance(options.attributeName), sampleFrames)
+            : reduceDiscreteSamples(values);
+
+        const pruned = pruneSerializedAnimationSamples(
+            keepIndices.map(index => sampleKeyTimes[index] || sampleKeyTimes[0] || '0'),
+            keepIndices.map(index => formatter(values[index])),
+            options.attributeName
+        );
+
+        return {
+            keyTimes: pruned.keyTimes.join(';'),
+            values: pruned.values
+        };
+    }
+
+    function pruneSerializedAnimationSamples(keyTimes, values, attributeName) {
+        if (!Array.isArray(values) || values.length <= 2) {
+            return {
+                keyTimes: keyTimes || [],
+                values: values || []
+            };
+        }
+
+        let keepIndices = reduceDuplicateSerializedSamples(values);
+        let reducedValues = keepIndices.map(index => values[index]);
+        let reducedKeyTimes = keepIndices.map(index => keyTimes[index]);
+
+        if (shouldPruneInterpolableSerializedSamples(attributeName) && reducedValues.length > 2) {
+            const comparable = buildComparableSamples(reducedValues, { attributeName });
+            if (comparable) {
+                const numericTimes = reducedKeyTimes.map(value => Number(value));
+                const prunedIndices = reduceInterpolableSamples(
+                    comparable,
+                    getSerializedAnimationTolerance(attributeName),
+                    numericTimes
+                );
+                reducedValues = prunedIndices.map(index => reducedValues[index]);
+                reducedKeyTimes = prunedIndices.map(index => reducedKeyTimes[index]);
+            }
+        }
+
+        return {
+            keyTimes: reducedKeyTimes,
+            values: reducedValues
+        };
+    }
+
+    function reduceDuplicateSerializedSamples(values) {
+        if (!Array.isArray(values) || values.length <= 2) return values.map((_, index) => index);
+
+        const keep = [0];
+        for (let index = 1; index < values.length - 1; index++) {
+            const prev = values[index - 1];
+            const current = values[index];
+            const next = values[index + 1];
+            if (!(current === prev && current === next)) {
+                keep.push(index);
+            }
+        }
+        keep.push(values.length - 1);
+        return keep;
+    }
+
+    function shouldPruneInterpolableSerializedSamples(attributeName) {
+        return ['translate', 'scale', 'rotate', 'skewX', 'opacity', 'fill-opacity', 'stroke-opacity', 'stroke-width', 'offset'].includes(attributeName);
+    }
+
+    function getSerializedAnimationTolerance(attributeName) {
+        if (attributeName === 'translate') return 0.0005;
+        if (attributeName === 'scale') return 0.00005;
+        if (attributeName === 'rotate' || attributeName === 'skewX') return 0.0005;
+        if (attributeName && attributeName.includes('opacity')) return 0.00005;
+        return 0.0005;
+    }
+
+    function serializeAnimateTransformElement(type, key, animation) {
+        const calcMode = animation.calcMode || 'linear';
+        let attrs = ` attributeName="transform" type="${type}" dur="${globalDuration}s" repeatCount="indefinite"`;
+        if (calcMode !== 'linear') attrs += ` calcMode="${calcMode}"`;
+        attrs += ` keyTimes="${animation.keyTimes}" values="${animation.values.join(';')}"`;
+        if (animation.keySplines) attrs += ` keySplines="${animation.keySplines}"`;
+        return `<animateTransform${attrs} />`;
+    }
+
+    function serializeAnimateElement(attributeName, animation, options = {}) {
+        const extra = options.extraAttributes || '';
+        const calcMode = animation.calcMode || options.calcMode || 'linear';
+        let attrs = ` attributeName="${attributeName}" dur="${globalDuration}s" repeatCount="indefinite"`;
+        if (calcMode !== 'linear') attrs += ` calcMode="${calcMode}"`;
+        attrs += ` keyTimes="${animation.keyTimes}" values="${animation.values.join(';')}"`;
+        if (animation.keySplines) attrs += ` keySplines="${animation.keySplines}"`;
+        return `<animate${attrs}${extra} />`;
+    }
+
+    function buildDirectKeyframeAnimation(prop, options = {}) {
+        if (!isAnimatedProperty(prop) || !Array.isArray(prop.k)) return null;
+        if (options.disallowSpatial && hasSpatialTangents(prop)) return null;
+
+        const keyframes = prop.k.filter(keyframe => keyframe && keyframe.t != null);
+        if (keyframes.length < 2) return null;
+
+        const points = [];
+
+        function pushPoint(time, value) {
+            if (value == null) return;
+            const clampedTime = clamp(time, globalFrameStart, globalFrameStart + globalFrameCount);
+            if (points.length && Math.abs(points[points.length - 1].time - clampedTime) < 0.0001) {
+                points[points.length - 1].value = value;
+                return;
+            }
+            points.push({ time: clampedTime, value });
+        }
+
+        const initialValue = mapDirectAnimationValue(getPropertyValue(prop, globalFrameStart, getFirstKeyframeValue(keyframes)), options);
+        pushPoint(globalFrameStart, initialValue);
+
+        for (let index = 0; index < keyframes.length - 1; index++) {
+            const current = keyframes[index];
+            const next = keyframes[index + 1];
+            const segmentStart = Math.max(globalFrameStart, current.t);
+            const segmentEnd = Math.min(globalFrameStart + globalFrameCount, next.t);
+            if (!(segmentEnd > segmentStart)) continue;
+
+            const startValue = mapDirectAnimationValue(getPropertyValue(prop, segmentStart, initialValue), options);
+            const endValue = mapDirectAnimationValue(getPropertyValue(prop, segmentEnd, initialValue), options);
+            pushPoint(segmentStart, startValue);
+            pushPoint(segmentEnd, current.h === 1 ? startValue : endValue);
+        }
+
+        const finalValue = mapDirectAnimationValue(getPropertyValue(prop, globalFrameStart + globalFrameCount, getLastKeyframeValue(keyframes)), options);
+        pushPoint(globalFrameStart + globalFrameCount, finalValue);
+
+        if (points.length < 2) return null;
+
+        const values = points.map(point => formatDirectAnimationValue(point.value, options));
+        const keyTimes = getKeyTimeValues(points.map(point => point.time)).join(';');
+        const segmentModes = [];
+        for (let index = 0; index < points.length - 1; index++) {
+            const midpoint = (points[index].time + points[index + 1].time) / 2;
+            const segmentKeyframe = findKeyframeForTime(keyframes, midpoint);
+            if (segmentKeyframe && segmentKeyframe.h !== 1 && !canSerializeSvgKeySpline(segmentKeyframe)) {
+                return null;
+            }
+            segmentModes.push({
+                mode: segmentKeyframe && segmentKeyframe.h === 1 ? 'discrete' : 'spline',
+                keyframe: segmentKeyframe
+            });
+        }
+
+        const hasDiscrete = segmentModes.some(segment => segment.mode === 'discrete');
+        const hasSpline = segmentModes.some(segment => segment.mode === 'spline');
+        if (hasDiscrete && hasSpline) return null;
+
+        return {
+            initialValue: points[0].value,
+            values,
+            keyTimes,
+            calcMode: hasDiscrete ? 'discrete' : 'spline',
+            keySplines: hasDiscrete ? '' : segmentModes.map(segment => formatKeySpline(segment.keyframe)).join(';')
+        };
+    }
+
+    function mapDirectAnimationValue(value, options = {}) {
+        if (typeof options.mapValue === 'function') return options.mapValue(value);
+        return value;
+    }
+
+    function formatDirectAnimationValue(value, options = {}) {
+        const formatter = options.formatter || formatAttributeValue;
+        return formatter(value);
+    }
+
+    function formatKeySpline(keyframe) {
+        const controls = extractSvgKeySplineControls(keyframe);
+        if (!controls) return '0 0 1 1';
+        return [controls.x1, controls.y1, controls.x2, controls.y2].map(formatNumber).join(' ');
+    }
+
+    function isAnimatedProperty(prop) {
+        return !!(prop && typeof prop === 'object' && prop.a === 1 && Array.isArray(prop.k));
+    }
+
+    function hasSpatialTangents(prop) {
+        return !!(prop && Array.isArray(prop.k) && prop.k.some(keyframe => keyframe && (keyframe.to != null || keyframe.ti != null)));
+    }
+
+    function canDirectMapPosition(transformData) {
+        return !!(transformData && transformData.p && isAnimatedProperty(transformData.p) && !hasSpatialTangents(transformData.p) && !transformData.px && !transformData.py);
+    }
+
+    function findKeyframeForTime(keyframes, time) {
+        for (let index = 0; index < keyframes.length - 1; index++) {
+            if (time >= keyframes[index].t && time < keyframes[index + 1].t) {
+                return keyframes[index];
+            }
+        }
+        return keyframes[keyframes.length - 1] || null;
+    }
+
+    function canSerializeSvgKeySpline(keyframe) {
+        return !!extractSvgKeySplineControls(keyframe);
+    }
+
+    function extractSvgKeySplineControls(keyframe) {
+        if (!keyframe || !keyframe.i || !keyframe.o) return { x1: 0, y1: 0, x2: 1, y2: 1 };
+
+        const x1 = extractUniformBezierComponent(keyframe.o.x, 0.333, true);
+        const y1 = extractUniformBezierComponent(keyframe.o.y, 0.333, false);
+        const x2 = extractUniformBezierComponent(keyframe.i.x, 0.667, true);
+        const y2 = extractUniformBezierComponent(keyframe.i.y, 0.667, false);
+
+        if ([x1, y1, x2, y2].some(value => value == null)) return null;
+        if (y1 < 0 || y1 > 1 || y2 < 0 || y2 > 1) return null;
+
+        return { x1, y1, x2, y2 };
+    }
+
+    function extractUniformBezierComponent(value, fallback, clampToUnit) {
+        if (Array.isArray(value)) {
+            if (!value.length) return fallback;
+            const numericValues = value.map(entry => Number(entry));
+            if (numericValues.some(entry => !Number.isFinite(entry))) return null;
+            const first = numericValues[0];
+            if (numericValues.some(entry => Math.abs(entry - first) > 0.0001)) return null;
+            return clampToUnit ? clamp(first, 0, 1) : first;
+        }
+
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric)) return clampToUnit ? clamp(fallback, 0, 1) : fallback;
+        return clampToUnit ? clamp(numeric, 0, 1) : numeric;
+    }
+
+    function buildComparableSamples(values, options = {}) {
+        const explicitComparable = typeof options.toComparable === 'function'
+            ? values.map(value => options.toComparable(value))
+            : inferComparableSamples(values, options.attributeName);
+
+        if (!explicitComparable || explicitComparable.some(value => value == null)) return null;
+
+        if (typeof options.signatureExtractor === 'function') {
+            const signatures = values.map(value => options.signatureExtractor(value));
+            if (signatures.some(signature => signature == null || signature !== signatures[0])) return null;
+        }
+
+        return explicitComparable;
+    }
+
+    function inferComparableSamples(values, attributeName) {
+        if (attributeName === 'd') {
+            const signatures = values.map(extractPathSignature);
+            if (signatures.some(signature => !signature || signature !== signatures[0])) return null;
+            return values.map(parsePathComparable);
+        }
+
+        if (['fill', 'stroke', 'stop-color'].includes(attributeName)) {
+            const colors = values.map(parseRGBComparable);
+            return colors.some(value => value == null) ? null : colors;
+        }
+
+        return values.map(parseNumericComparable);
+    }
+
+    function reduceDiscreteSamples(values) {
+        if (values.length <= 2) return values.map((_, index) => index);
+        const keep = [0];
+        for (let index = 1; index < values.length - 1; index++) {
+            if (!(values[index] === values[index - 1] && values[index] === values[index + 1])) {
+                keep.push(index);
+            }
+        }
+        keep.push(values.length - 1);
+        return keep;
+    }
+
+    function reduceInterpolableSamples(values, tolerance, sampleFrames = globalSampleFrames) {
+        if (!Array.isArray(values) || values.length <= 2) return values.map((_, index) => index);
+
+        const keep = new Set([0, values.length - 1]);
+
+        function decimate(start, end) {
+            if (end - start <= 1) return;
+
+            const startTime = sampleFrames[start];
+            const endTime = sampleFrames[end];
+            if (!Number.isFinite(startTime) || !Number.isFinite(endTime) || Math.abs(endTime - startTime) < 0.000001) {
+                for (let index = start + 1; index < end; index++) keep.add(index);
+                return;
+            }
+
+            let maxError = -1;
+            let maxIndex = -1;
+
+            for (let index = start + 1; index < end; index++) {
+                const progress = clamp((sampleFrames[index] - startTime) / (endTime - startTime), 0, 1);
+                const expected = interpolateValue(values[start], values[end], progress);
+                const error = measureComparableDistance(values[index], expected);
+                if (error > maxError) {
+                    maxError = error;
+                    maxIndex = index;
+                }
+            }
+
+            if (maxError > tolerance && maxIndex !== -1) {
+                keep.add(maxIndex);
+                decimate(start, maxIndex);
+                decimate(maxIndex, end);
+            }
+        }
+
+        decimate(0, values.length - 1);
+        return Array.from(keep).sort((left, right) => left - right);
+    }
+
+    function getTransformAnimationTolerance(type) {
+        if (type === 'translate') return 0.05;
+        if (type === 'rotate' || type === 'skewX') return 0.05;
+        if (type === 'scale') return 0.0005;
+        if (type === 'matrix') return 0.001;
+        return 0.02;
+    }
+
+    function getAnimationTolerance(attributeName) {
+        if (attributeName === 'd') return 0.15;
+        if (['fill', 'stroke', 'stop-color'].includes(attributeName)) return 1;
+        if (attributeName && attributeName.includes('opacity')) return 0.002;
+        if (attributeName === 'offset') return 0.05;
+        return 0.02;
+    }
+
+    function parseNumericComparable(value) {
+        if (typeof value === 'number') return value;
+        if (Array.isArray(value)) {
+            const parsed = value.map(entry => parseNumericComparable(entry));
+            return parsed.some(entry => entry == null) ? null : parsed;
+        }
+        if (typeof value === 'string' && /^-?\d*\.?\d+(e[-+]?\d+)?$/i.test(value.trim())) {
+            return Number(value);
+        }
+        return null;
+    }
+
+    function parseRGBComparable(value) {
+        if (typeof value !== 'string') return null;
+        const match = value.match(/rgb\(\s*([-\d.]+)\s*,\s*([-\d.]+)\s*,\s*([-\d.]+)\s*\)/i);
+        if (!match) return null;
+        return [Number(match[1]), Number(match[2]), Number(match[3])];
+    }
+
+    function extractPathSignature(value) {
+        if (typeof value !== 'string') return null;
+        return value.replace(/-?\d*\.?\d+(e[-+]?\d+)?/gi, '#');
+    }
+
+    function parsePathComparable(value) {
+        if (typeof value !== 'string') return null;
+        const matches = value.match(/-?\d*\.?\d+(e[-+]?\d+)?/gi);
+        if (!matches) return [];
+        return matches.map(Number);
+    }
+
+    function measureComparableDistance(left, right) {
+        if (typeof left === 'number' && typeof right === 'number') {
+            return Math.abs(left - right);
+        }
+        if (Array.isArray(left) && Array.isArray(right) && left.length === right.length) {
+            let maxDistance = 0;
+            for (let index = 0; index < left.length; index++) {
+                maxDistance = Math.max(maxDistance, measureComparableDistance(left[index], right[index]));
+            }
+            return maxDistance;
+        }
+        return Number.POSITIVE_INFINITY;
+    }
+
+    function getPositionValue(transformData, frame) {
+        if (transformData.p) {
+            const position = getPropertyValue(transformData.p, frame, [0, 0, 0]);
+            return evaluateVec2(position);
+        }
+        const x = getScalarValue(getPropertyValue(transformData.px, frame, 0), 0);
+        const y = getScalarValue(getPropertyValue(transformData.py, frame, 0), 0);
+        return [x, y];
+    }
+
+    function evaluateVec3(value, fallback = [0, 0, 0]) {
+        if (Array.isArray(value)) {
+            return [
+                Number(value[0] ?? fallback[0]),
+                Number(value[1] ?? fallback[1]),
+                Number(value[2] ?? fallback[2])
+            ];
+        }
+        return [fallback[0], fallback[1], fallback[2]];
+    }
+
+    function getPropertyValue(prop, frame, fallback) {
+        if (!prop) return cloneValue(fallback);
+        if (typeof prop !== 'object') return cloneValue(prop);
+        if (prop.a !== 1 || !Array.isArray(prop.k)) return cloneValue(unwrapPropertyValue(prop.k != null ? prop.k : fallback));
+
+        const keyframes = prop.k.filter(kf => kf && kf.t != null);
+        if (!keyframes.length) return cloneValue(fallback);
+
+        const firstResolvedValue = getFirstKeyframeValue(keyframes);
+        const lastResolvedValue = getLastKeyframeValue(keyframes);
+        if (frame <= keyframes[0].t) return cloneValue(firstResolvedValue != null ? firstResolvedValue : fallback);
+
+        let previousResolvedValue = firstResolvedValue;
+
+        for (let index = 0; index < keyframes.length; index++) {
+            const current = keyframes[index];
+            const next = keyframes[index + 1];
+            const currentStart = getKeyframeValue(current, false);
+            const currentEnd = getKeyframeEndValue(current);
+            const segmentStart = currentStart != null ? currentStart : (currentEnd != null ? currentEnd : previousResolvedValue);
+
+            if (!next) {
+                return cloneValue(currentEnd != null
+                    ? currentEnd
+                    : (currentStart != null ? currentStart : (previousResolvedValue != null ? previousResolvedValue : lastResolvedValue)));
+            }
+
+            if (frame < next.t) {
+                if (current.h === 1) return cloneValue(segmentStart != null ? segmentStart : fallback);
+                const nextStart = getKeyframeValue(next, false);
+                const endValue = currentEnd != null ? currentEnd : (nextStart != null ? nextStart : segmentStart);
+                if (segmentStart == null || endValue == null) {
+                    return cloneValue(endValue != null ? endValue : (segmentStart != null ? segmentStart : fallback));
+                }
+                const progress = clamp((frame - current.t) / Math.max(0.000001, next.t - current.t), 0, 1);
+                const easedProgress = applyBezierEase(progress, current);
+                return interpolateValue(segmentStart, endValue, easedProgress);
+            }
+
+            if (currentEnd != null) {
+                previousResolvedValue = currentEnd;
+            } else if (currentStart != null) {
+                previousResolvedValue = currentStart;
+            }
+        }
+
+        return cloneValue(lastResolvedValue != null ? lastResolvedValue : fallback);
+    }
+
+    function getKeyframeValue(keyframe, preferEnd = false) {
+        if (!keyframe) return null;
+        const rawValue = preferEnd
+            ? (keyframe.e != null ? keyframe.e : keyframe.s)
+            : (keyframe.s != null ? keyframe.s : keyframe.e);
+        const value = unwrapPropertyValue(rawValue);
+        return value == null ? null : value;
+    }
+
+    function getKeyframeEndValue(keyframe) {
+        if (!keyframe || keyframe.e == null) return null;
+        const value = unwrapPropertyValue(keyframe.e);
+        return value == null ? null : value;
+    }
+
+    function getFirstKeyframeValue(keyframes) {
+        for (let index = 0; index < keyframes.length; index++) {
+            const value = getKeyframeValue(keyframes[index], false);
+            if (value != null) return value;
+        }
+        return null;
+    }
+
+    function getLastKeyframeValue(keyframes) {
+        for (let index = keyframes.length - 1; index >= 0; index--) {
+            const endValue = getKeyframeEndValue(keyframes[index]);
+            if (endValue != null) return endValue;
+            const startValue = getKeyframeValue(keyframes[index], false);
+            if (startValue != null) return startValue;
+        }
+        return null;
+    }
+
+    function unwrapPropertyValue(value) {
+        if (Array.isArray(value) && value.length === 1 && isBezierPath(value[0])) {
+            return value[0];
+        }
+        return value;
+    }
+
+    function isBezierPath(value) {
+        return value && typeof value === 'object' && Array.isArray(value.i) && Array.isArray(value.o) && Array.isArray(value.v);
+    }
+
+    function interpolateValue(start, end, progress) {
+        if (typeof start === 'number' && typeof end === 'number') {
+            return start + (end - start) * progress;
+        }
+
+        if (Array.isArray(start) && Array.isArray(end)) {
+            return start.map((value, index) => interpolateValue(value, end[index], progress));
+        }
+
+        if (isBezierPath(start) && isBezierPath(end) && start.v.length === end.v.length) {
+            return {
+                c: start.c,
+                i: start.i.map((point, index) => interpolateValue(point, end.i[index], progress)),
+                o: start.o.map((point, index) => interpolateValue(point, end.o[index], progress)),
+                v: start.v.map((point, index) => interpolateValue(point, end.v[index], progress))
+            };
+        }
+
+        return cloneValue(progress < 1 ? start : end);
+    }
+
+    function applyBezierEase(progress, keyframe) {
+        if (!keyframe || !keyframe.i || !keyframe.o) return progress;
+
+        const x1 = clamp(asBezierScalar(keyframe.o.x, 0.333), 0, 1);
+        const y1 = asBezierScalar(keyframe.o.y, 0.333);
+        const x2 = clamp(asBezierScalar(keyframe.i.x, 0.667), 0, 1);
+        const y2 = asBezierScalar(keyframe.i.y, 0.667);
+        const t = solveBezierT(progress, x1, x2);
+        return cubicBezierValue(t, y1, y2);
+    }
+
+    function solveBezierT(x, x1, x2) {
+        let lower = 0;
+        let upper = 1;
+        let t = x;
+
+        for (let index = 0; index < 8; index++) {
+            const estimate = cubicBezierValue(t, x1, x2) - x;
+            if (Math.abs(estimate) < 0.0001) return t;
+            const slope = cubicBezierSlope(t, x1, x2);
+            if (Math.abs(slope) < 0.0001) break;
+            t -= estimate / slope;
+        }
+
+        t = x;
+        for (let index = 0; index < 12; index++) {
+            const estimate = cubicBezierValue(t, x1, x2);
+            if (Math.abs(estimate - x) < 0.0001) return t;
+            if (estimate < x) {
+                lower = t;
+            } else {
+                upper = t;
+            }
+            t = (lower + upper) / 2;
+        }
+
+        return t;
+    }
+
+    function cubicBezierValue(t, p1, p2) {
+        const inverse = 1 - t;
+        return 3 * inverse * inverse * t * p1 + 3 * inverse * t * t * p2 + t * t * t;
+    }
+
+    function cubicBezierSlope(t, p1, p2) {
+        const inverse = 1 - t;
+        return 3 * inverse * inverse * p1 + 6 * inverse * t * (p2 - p1) + 3 * t * t * (1 - p2);
+    }
+
+    function pathDataToD(pathData) {
+        if (!pathData || !Array.isArray(pathData.v) || !pathData.v.length) return '';
+
+        let d = `M ${formatNumber(pathData.v[0][0])} ${formatNumber(pathData.v[0][1])}`;
+        for (let index = 1; index < pathData.v.length; index++) {
+            d += ` C ${formatNumber(pathData.v[index - 1][0] + pathData.o[index - 1][0])} ${formatNumber(pathData.v[index - 1][1] + pathData.o[index - 1][1])}`;
+            d += ` ${formatNumber(pathData.v[index][0] + pathData.i[index][0])} ${formatNumber(pathData.v[index][1] + pathData.i[index][1])}`;
+            d += ` ${formatNumber(pathData.v[index][0])} ${formatNumber(pathData.v[index][1])}`;
+        }
+
+        if (pathData.c) {
+            const lastIndex = pathData.v.length - 1;
+            d += ` C ${formatNumber(pathData.v[lastIndex][0] + pathData.o[lastIndex][0])} ${formatNumber(pathData.v[lastIndex][1] + pathData.o[lastIndex][1])}`;
+            d += ` ${formatNumber(pathData.v[0][0] + pathData.i[0][0])} ${formatNumber(pathData.v[0][1] + pathData.i[0][1])}`;
+            d += ` ${formatNumber(pathData.v[0][0])} ${formatNumber(pathData.v[0][1])} Z`;
+        }
+
+        return d;
+    }
+
+    function roundedRectToD(cx, cy, width, height, radius) {
+        const x = cx - width / 2;
+        const y = cy - height / 2;
+        const r = clamp(radius, 0, Math.min(width, height) / 2);
+        const right = x + width;
+        const bottom = y + height;
+
+        return [
+            `M ${formatNumber(x + r)} ${formatNumber(y)}`,
+            `L ${formatNumber(right - r)} ${formatNumber(y)}`,
+            `Q ${formatNumber(right)} ${formatNumber(y)} ${formatNumber(right)} ${formatNumber(y + r)}`,
+            `L ${formatNumber(right)} ${formatNumber(bottom - r)}`,
+            `Q ${formatNumber(right)} ${formatNumber(bottom)} ${formatNumber(right - r)} ${formatNumber(bottom)}`,
+            `L ${formatNumber(x + r)} ${formatNumber(bottom)}`,
+            `Q ${formatNumber(x)} ${formatNumber(bottom)} ${formatNumber(x)} ${formatNumber(bottom - r)}`,
+            `L ${formatNumber(x)} ${formatNumber(y + r)}`,
+            `Q ${formatNumber(x)} ${formatNumber(y)} ${formatNumber(x + r)} ${formatNumber(y)}`,
+            'Z'
+        ].join(' ');
+    }
+
+    function ellipseToD(cx, cy, rx, ry) {
+        const ox = rx * ELLIPSE_KAPPA;
+        const oy = ry * ELLIPSE_KAPPA;
+        return [
+            `M ${formatNumber(cx)} ${formatNumber(cy - ry)}`,
+            `C ${formatNumber(cx + ox)} ${formatNumber(cy - ry)} ${formatNumber(cx + rx)} ${formatNumber(cy - oy)} ${formatNumber(cx + rx)} ${formatNumber(cy)}`,
+            `C ${formatNumber(cx + rx)} ${formatNumber(cy + oy)} ${formatNumber(cx + ox)} ${formatNumber(cy + ry)} ${formatNumber(cx)} ${formatNumber(cy + ry)}`,
+            `C ${formatNumber(cx - ox)} ${formatNumber(cy + ry)} ${formatNumber(cx - rx)} ${formatNumber(cy + oy)} ${formatNumber(cx - rx)} ${formatNumber(cy)}`,
+            `C ${formatNumber(cx - rx)} ${formatNumber(cy - oy)} ${formatNumber(cx - ox)} ${formatNumber(cy - ry)} ${formatNumber(cx)} ${formatNumber(cy - ry)}`,
+            'Z'
+        ].join(' ');
+    }
+
+    function evaluateVec2(value, fallback = [0, 0]) {
+        if (Array.isArray(value)) return [Number(value[0] || 0), Number(value[1] || 0)];
+        return fallback.slice();
+    }
+
+    function getScalarValue(value, fallback = 0) {
+        if (typeof value === 'number') return value;
+        if (Array.isArray(value) && typeof value[0] === 'number') return value[0];
+        return fallback;
+    }
+
+    function colorToRGB(value) {
+        const color = Array.isArray(value) ? value : [0, 0, 0];
+        return `rgb(${Math.round(clamp(color[0], 0, 1) * 255)}, ${Math.round(clamp(color[1], 0, 1) * 255)}, ${Math.round(clamp(color[2], 0, 1) * 255)})`;
+    }
+
+    function lineCap(value) {
+        return { 1: 'butt', 2: 'round', 3: 'square' }[value] || 'round';
+    }
+
+    function lineJoin(value) {
+        return { 1: 'miter', 2: 'round', 3: 'bevel' }[value] || 'round';
+    }
+
+    function mapFillRule(value) {
+        return value === 2 ? 'evenodd' : 'nonzero';
+    }
+
+    function allValuesEqual(values) {
+        if (!values.length) return true;
+        return values.every(value => value === values[0]);
+    }
+
+    function valuesMatchIdentity(value, identityValue) {
+        if (Array.isArray(identityValue)) {
+            return Array.isArray(value) && value.length === identityValue.length && value.every((item, index) => Math.abs(item - identityValue[index]) < 0.0001);
+        }
+        return Math.abs(Number(value) - Number(identityValue)) < 0.0001;
+    }
+
+    function formatTransformValue(type, value) {
+        if (type === 'matrix') return (Array.isArray(value) ? value : createIdentityMatrix()).map(item => formatNumber(item)).join(' ');
+        if (type === 'rotate') return formatNumber(value);
+        if (Array.isArray(value)) return value.map(item => formatNumber(item)).join(' ');
+        return formatNumber(value);
+    }
+
+    function formatAttributeValue(value) {
+        if (typeof value === 'number') return formatNumber(value);
+        return `${value}`;
+    }
+
+    function minifySvgMarkup(svg) {
+        return `${svg || ''}`.replace(/>\s+</g, '><').trim();
+    }
+
+    function compressSvgMarkup(svg) {
+        let compressed = minifySvgMarkup(svg);
+        compressed = minifyColorTokens(compressed);
+        compressed = minifyPathAttributes(compressed);
+        compressed = minifyAnimatedPathValues(compressed);
+        compressed = minifyNumericTokens(compressed);
+        compressed = compressed.replace(/\s{2,}/g, ' ');
+        return compressed;
+    }
+
+    function minifyColorTokens(svg) {
+        return `${svg || ''}`.replace(/rgb\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)/g, (_, red, green, blue) => {
+            return rgbToShortHex(Number(red), Number(green), Number(blue));
+        });
+    }
+
+    function rgbToShortHex(red, green, blue) {
+        const hex = [red, green, blue]
+            .map(value => clamp(Math.round(value), 0, 255).toString(16).padStart(2, '0'))
+            .join('');
+        if (hex[0] === hex[1] && hex[2] === hex[3] && hex[4] === hex[5]) {
+            return `#${hex[0]}${hex[2]}${hex[4]}`;
+        }
+        return `#${hex}`;
+    }
+
+    function minifyPathAttributes(svg) {
+        return `${svg || ''}`.replace(/\sd="([^"]*)"/g, (_, value) => ` d="${minifyPathData(value)}"`);
+    }
+
+    function minifyAnimatedPathValues(svg) {
+        return `${svg || ''}`.replace(/(<animate\b[^>]*attributeName="d"[^>]*values=")([^"]*)(")/g, (_, prefix, values, suffix) => {
+            const minifiedValues = values.split(';').map(minifyPathData).join(';');
+            return `${prefix}${minifiedValues}${suffix}`;
+        });
+    }
+
+    function minifyPathData(value) {
+        return `${value || ''}`
+            .replace(/\s+/g, ' ')
+            .replace(/\s*([MLCQZ])\s*/gi, '$1')
+            .replace(/(\d)\s-([.\d])/g, '$1-$2')
+            .trim();
+    }
+
+    function minifyNumericTokens(svg) {
+        return `${svg || ''}`
+            .replace(/(^|[^\d])(-?)0\.(\d+)/g, (_, prefix, sign, fraction) => `${prefix}${sign}.${fraction}`)
+            .replace(/(;| |,|\()(-?)0\.(\d+)/g, (_, prefix, sign, fraction) => `${prefix}${sign}.${fraction}`);
+    }
+
+    function formatNumber(value) {
+        return Number(value).toFixed(3).replace(/\.?0+$/, '');
+    }
+
+    function asBezierScalar(value, fallback) {
+        if (typeof value === 'number') return value;
+        if (Array.isArray(value)) return Number(value[0] || fallback);
+        return fallback;
+    }
+
+    function clamp(value, min, max) {
+        return Math.min(max, Math.max(min, value));
+    }
+
+    function cloneValue(value) {
+        if (Array.isArray(value)) return value.map(cloneValue);
+        if (value && typeof value === 'object') return JSON.parse(JSON.stringify(value));
+        return value;
+    }
+
+    LC.compiler = {
+        compileLottie,
+        compileLottieFallback,
+        compressSvgMarkup,
+        minifySvgMarkup
+    };
+})();
