@@ -1,7 +1,12 @@
-(function () {
-    const LC = window.LottieCompiler || (window.LottieCompiler = {});
-    const state = LC.state;
-    const ui = LC.ui;
+import { getUID, state } from './state.js';
+import { ELLIPSE_KAPPA } from './shared.js';
+import {
+    getByteSize,
+    renderActiveSvgOutput,
+    updateMeta,
+    updateStatus,
+    updateSvgVariantControls
+} from './ui.js';
 
     let globalAssets = {};
     let globalFPS = 30;
@@ -14,32 +19,6 @@
     let globalKeyTimeNumbers = [0, 1];
     let defsHTML = "";
     let globalGradientCache = new Map();
-
-    const ELLIPSE_KAPPA = 0.5522847498307936;
-
-    function getUID(prefix) {
-        return LC.getUID(prefix);
-    }
-
-    function updateStatus(message) {
-        return ui.updateStatus(message);
-    }
-
-    function renderActiveSvgOutput() {
-        return ui.renderActiveSvgOutput();
-    }
-
-    function updateSvgVariantControls() {
-        return ui.updateSvgVariantControls();
-    }
-
-    function updateMeta(data) {
-        return ui.updateMeta(data);
-    }
-
-    function getByteSize(text) {
-        return ui.getByteSize(text);
-    }
 
     async function compileLottie(data, fileName = '') {
         try {
@@ -2042,10 +2021,9 @@
         return value;
     }
 
-    LC.compiler = {
-        compileLottie,
-        compileLottieFallback,
-        compressSvgMarkup,
-        minifySvgMarkup
-    };
-})();
+export {
+    compileLottie,
+    compileLottieFallback,
+    compressSvgMarkup,
+    minifySvgMarkup
+};

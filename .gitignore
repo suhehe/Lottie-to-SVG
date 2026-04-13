@@ -4,6 +4,10 @@
 # Generated archives
 *.zip
 
+# Node / Vite
+node_modules/
+dist/
+
 # Generated image exports under lottie samples
 lottie/**/apng/
 lottie/**/png/
