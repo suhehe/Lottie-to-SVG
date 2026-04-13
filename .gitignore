@@ -6,7 +6,7 @@
 
 # Node / Vite
 node_modules/
-#dist/
+dist/
 
 # Generated image exports under lottie samples
 lottie/**/apng/
