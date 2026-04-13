@@ -2,11 +2,12 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "lottie-to-svg",
   "compatibility_date": "2026-04-09",
+  "pages_build_output_dir": "./dist",
   "observability": {
     "enabled": true
   },
   "assets": {
-    "directory": "."
+    "directory": "./dist"
   },
   "compatibility_flags": [
     "nodejs_compat"

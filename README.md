@@ -17,6 +17,52 @@
 - 自动统计素材元信息
 - 自动分析当前素材的支持特性与未支持特性
 
+## 本地开发
+
+安装依赖：
+
+```bash
+npm install
+```
+
+启动开发环境：
+
+```bash
+npm run dev
+```
+
+构建产物：
+
+```bash
+npm run build
+```
+
+本地预览构建结果：
+
+```bash
+npm run preview
+```
+
+## Cloudflare 部署
+
+当前项目已经是 Vite 应用，Cloudflare 必须发布构建产物 `dist`，不能直接托管仓库根目录。
+
+错误部署方式的典型现象是：
+
+- 页面样式正常
+- 但脚本没有执行
+- 上传区域点击无反应
+- 页面一直停留在未初始化的大上传区
+
+根因是源码入口 [`index.html`](./index.html) 直接引用了 ESM 脚本，而源码中的依赖包含裸模块导入，例如 `lottie-web`。这些导入必须先经过 Vite 打包，浏览器静态托管源码时不会解析。
+
+Cloudflare 正确配置：
+
+- Build command: `npm run build`
+- Build output directory: `dist`
+
+如果使用 `wrangler`，仓库内的 [`wrangler.jsonc`](./wrangler.jsonc) 已经配置为发布 `dist`。
+
 ## 特性支持矩阵
 
 | 类别 | 特性 | 当前状态 | 说明 |
@@ -100,6 +146,6 @@ SVG 面板中的“压缩”开关默认开启。
 
 ## 注意事项
 
-- 原始 Lottie 预览依赖页面中引入的 `lottie.min.js`
+- 原始 Lottie 预览依赖 `lottie-web`
 - 某些复杂动画会为了稳定性自动回退到采样输出，因此文件体积可能仍然偏大
 - 这个工具更适合“设计还原、交付导出、代码检查、结构分析”，不适合作为完整的 Lottie 运行时替代品

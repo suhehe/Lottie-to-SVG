@@ -1,0 +1,831 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>Advanced Lottie to SVG Compiler with Matrix Inheritance and Masks</title>
+    <style>
+        :root {
+            --bg: #f5f7fb;
+            --surface: #ffffff;
+            --surface-soft: #fbfcff;
+            --border: #e4e8f0;
+            --border-strong: #a8afbe;
+            --text: #20232d;
+            --muted: #6e7586;
+            --muted-soft: #9097a8;
+            --code-bg: #f7f9fc;
+            --code-text: #344054;
+            --success: #52d43f;
+            --blue: #69bcff;
+            --green: #6ce369;
+            --yellow: #ffc75b;
+            --red: #ff8686;
+            --shadow: 0 18px 40px rgba(15, 23, 42, 0.06);
+            --radius-xl: 20px;
+            --radius-lg: 12px;
+        }
+
+        * { box-sizing: border-box; }
+
+        [hidden] {
+            display: none !important;
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            padding: 8px;
+            font-family: "PingFang SC", "SF Pro Display", "Helvetica Neue", sans-serif;
+            color: var(--text);
+            background:
+                radial-gradient(circle at top left, rgba(105, 188, 255, 0.08), transparent 28%),
+                linear-gradient(180deg, #fafbff 0%, #f5f7fb 100%);
+        }
+
+        .container {
+            max-width: 1440px;
+            margin: 0 auto;
+        }
+
+        .app-shell {
+            display: grid;
+            gap: 12px;
+            min-height: calc(100vh - 16px);
+        }
+
+        .card,
+        .panel,
+        .feature-group,
+        .stat {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-xl);
+            box-shadow: var(--shadow);
+        }
+
+        .upload-section {
+            grid-area: upload;
+            padding: 0;
+        }
+
+        .upload-shell {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            height: 100%;
+            padding: 12px;
+        }
+
+        .upload-area {
+            position: relative;
+            flex: 1;
+            min-height: 180px;
+            border: 1.5px dashed var(--border-strong);
+            /* border-radius: var(--radius-xl); */
+            border-radius: var(--radius-lg);
+            background: var(--surface);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            padding: 32px 24px;
+            transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+        }
+
+        .upload-area:hover {
+            transform: translateY(-1px);
+            border-color: #8c95a8;
+            box-shadow: 0 12px 28px rgba(15, 23, 42, 0.08);
+        }
+
+        .upload-copy h1 {
+            margin: 0;
+            font-size: clamp(24px, 3vw, 30px);
+            font-weight: 500;
+            letter-spacing: 0.01em;
+        }
+
+        .upload-copy p {
+            margin: 10px 0 0;
+            color: var(--muted);
+            font-size: 13px;
+            line-height: 1.7;
+        }
+
+        .upload-toolbar {
+            display: none;
+            align-items: center;
+            align-self: center;
+            /* justify-content: space-between; */
+            gap: 12px;
+            padding: 12px 0;
+        }
+
+        .upload-toolbar-actions {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            /* margin-left: auto; */
+        }
+
+        .status {
+            color: var(--muted);
+            font-size: 13px;
+            min-height: 20px;
+            text-align: center;
+        }
+
+        button {
+            background: var(--text);
+            color: #ffffff;
+            border: none;
+            /* padding: 10px 12px; */
+            padding: 4px 12px;
+            border-radius: var(--radius-lg);
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 600;
+            transition: transform 0.2s ease, box-shadow 0.2s ease, opacity 0.2s ease;
+        }
+
+        button:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 10px 24px rgba(15, 23, 42, 0.12);
+        }
+
+        .button-secondary {
+            background: #ffffff;
+            color: var(--text);
+            border: 1px solid var(--border);
+            box-shadow: none;
+        }
+
+        .button-secondary:hover {
+            box-shadow: 0 8px 20px rgba(15, 23, 42, 0.08);
+        }
+
+        .stats {
+            grid-area: meta;
+            display: none;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 12px;
+            height: 100%;
+        }
+
+        .stat {
+            padding: 14px 18px;
+            text-align: center;
+            min-height: 70px;
+        }
+
+        .stat-label {
+            display: block;
+            margin-bottom: 6px;
+            color: var(--muted);
+            font-size: 12px;
+        }
+
+        .stat-value {
+            font-size: 18px;
+            font-weight: 600;
+        }
+
+        .feature-report {
+            grid-area: features;
+            display: none;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 12px;
+        }
+
+        .feature-group {
+            padding: 12px;
+            min-height: 148px;
+        }
+
+        .feature-group-header {
+            display: flex;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+
+        .feature-badge {
+            display: inline-flex;
+            align-items: center;
+            padding: 6px 10px;
+            border-radius: 10px;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text);
+        }
+
+        .feature-group.supported .feature-badge {
+            background: var(--yellow);
+        }
+
+        .feature-group.unsupported .feature-badge {
+            background: var(--red);
+        }
+
+        .feature-list {
+            list-style: none;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-content: flex-start;
+        }
+
+        .feature-list li {
+            padding: 7px 10px;
+            border-radius: var(--radius-lg);
+            font-size: 12px;
+            line-height: 1.4;
+            background: #f6f8fc;
+            color: var(--muted);
+            border: 1px solid #ebeff5;
+        }
+
+        .feature-group.supported .feature-list li {
+            color: #8a5d00;
+            background: #fff6db;
+            border-color: #ffe39b;
+        }
+
+        .feature-group.unsupported .feature-list li {
+            color: #9c2f2f;
+            background: #fff0f0;
+            border-color: #ffc3c3;
+        }
+
+        .feature-empty {
+            color: var(--muted);
+            font-size: 12px;
+            line-height: 1.6;
+            padding: 0;
+            background: transparent;
+            border: none;
+        }
+
+        .workspace {
+            grid-area: workspace;
+            display: none;
+            width: 100%;
+            grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+            grid-auto-rows: minmax(520px, auto);
+            gap: 12px;
+            min-height: 0;
+            align-items: stretch;
+        }
+
+        .panel {
+            padding: 12px;
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+        }
+
+        .workspace > .panel {
+            width: 100%;
+            min-width: 0;
+            height: 100%;
+        }
+
+        .panel-lottie,
+        .panel-svg {
+            min-width: 0;
+        }
+
+        .panel-lottie {
+            grid-column: 1;
+        }
+
+        .panel-svg {
+            grid-column: 2;
+        }
+
+        .panel-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 10px;
+        }
+
+        .panel-tag {
+            display: inline-flex;
+            align-items: center;
+            padding: 6px 10px;
+            border-radius: 10px;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text);
+        }
+
+        .panel-tag.json {
+            background: var(--blue);
+        }
+
+        .panel-tag.svg {
+            background: var(--green);
+        }
+
+        .panel-meta {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: var(--text);
+            font-size: 13px;
+            font-weight: 500;
+        }
+
+        .panel-actions {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-left: auto;
+            flex-wrap: wrap;
+        }
+
+        .panel-size {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            /* padding: 0 12px; */
+            padding: 6px 12px;
+            /* min-height: 40px; */
+            /* min-width: 88px; */
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            background: #f3f4f6;
+            color: var(--muted);
+            font-size: 14px;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+
+        .view-switch {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            background: #efefef;
+            padding: 3px;
+        }
+
+        .view-btn {
+            border: none;
+            background: transparent;
+            color: var(--muted);
+            /* padding: 11px 18px; */
+            border-radius: 13px;
+            font-size: 14px;
+            font-weight: 600;
+            box-shadow: none;
+        }
+
+        .view-btn:hover {
+            transform: none;
+            box-shadow: none;
+            color: var(--text);
+        }
+
+        .view-btn.is-active {
+            background: var(--surface);
+            color: var(--text);
+            box-shadow: 0 4px 10px rgba(15, 23, 42, 0.08);
+        }
+
+        .panel-download {
+            /* min-height: 40px; */
+            padding: 8px 22px;
+            border-radius: 16px;
+            font-size: 14px;
+            box-shadow: none;
+        }
+
+        .switch-control {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 0 4px 0 8px;
+            color: var(--text);
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .switch-button {
+            width: 50px;
+            /* height: 34px; */
+            border: none;
+            border-radius: 999px;
+            background: #d9dce4;
+            padding: 3px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: flex-start;
+            transition: background 0.2s ease;
+            box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.04);
+        }
+
+        .switch-button:hover {
+            transform: none;
+            box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.04);
+        }
+
+        .switch-button[aria-checked="true"] {
+            background: #33db19;
+        }
+
+        .switch-button:disabled {
+            opacity: 0.55;
+            cursor: not-allowed;
+        }
+
+        .switch-thumb {
+            display: block;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: #fff;
+            box-shadow: 0 2px 6px rgba(15, 23, 42, 0.18);
+            transition: transform 0.2s ease;
+        }
+
+        .switch-button[aria-checked="true"] .switch-thumb {
+            transform: translateX(24px);
+        }
+
+        .panel-surface {
+            flex: 1;
+            display: flex;
+            min-height: 0;
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            background: var(--surface);
+            overflow: hidden;
+        }
+
+        .panel-view {
+            display: none;
+            flex: 1 1 auto;
+            min-height: 430px;
+            width: 100%;
+        }
+
+        .panel-view.is-active {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .code-box {
+            width: 100%;
+            min-height: 100%;
+            flex: 1;
+            font-family: "SFMono-Regular", "JetBrains Mono", "Menlo", monospace;
+            font-size: 12px;
+            line-height: 1.6;
+            padding: 14px 16px;
+            background: var(--code-bg);
+            color: var(--code-text);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            resize: none;
+            /* white-space: pre; */
+        }
+
+        .preview {
+            flex: 1;
+            min-height: 0;
+            border-radius: var(--radius-lg);
+            background: #ffffff;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: auto;
+            min-height: 430px;
+        }
+
+        .preview svg {
+            max-width: 100%;
+            max-height: 100%;
+            display: block;
+        }
+
+        .lottie-stage {
+            flex: 1;
+            min-height: 0;
+            border-radius: var(--radius-lg);
+            background: #ffffff;
+            border: 1px solid var(--border);
+            overflow: hidden;
+            position: relative;
+        }
+
+        .lottie-player {
+            width: 100%;
+            height: 100%;
+            min-height: 430px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .json-source {
+            flex: 1;
+            width: 100%;
+            min-height: 100%;
+        }
+
+        .empty-state {
+            color: var(--muted-soft);
+            text-align: center;
+            line-height: 1.7;
+            max-width: 360px;
+            font-size: 13px;
+        }
+
+        .app-shell:not(.is-loaded) {
+            grid-template-columns: 1fr;
+            grid-template-areas: "upload";
+        }
+
+        .app-shell:not(.is-loaded) .upload-shell {
+            min-height: calc(100vh - 32px);
+        }
+
+        .app-shell:not(.is-loaded) .upload-area {
+            min-height: calc(100vh - 32px);
+        }
+
+        .app-shell.is-loaded {
+            grid-template-columns: minmax(0, 1fr) minmax(340px, 1fr);
+            grid-template-areas:
+                "upload features"
+                "meta features"
+                "workspace workspace";
+            grid-template-rows: auto auto minmax(0, 1fr);
+            align-items: start;
+        }
+
+        .upload-section,
+        .stats,
+        .feature-report,
+        .workspace {
+            min-width: 0;
+            align-self: start;
+            height: 100%;
+        }
+
+        .app-shell.is-loaded .upload-area {
+            flex: 0 0 auto;
+            /* min-height: 72px; */
+            height: 100%;
+            padding: 20px 18px;
+        }
+
+        .app-shell.is-loaded .upload-shell {
+            height: auto;
+        }
+
+        .app-shell.is-loaded .upload-copy h1 {
+            font-size: 18px;
+        }
+
+        .app-shell.is-loaded .upload-copy p {
+            margin-top: 6px;
+            font-size: 12px;
+        }
+
+        .app-shell.is-loaded .upload-toolbar,
+        .app-shell.is-loaded .stats,
+        .app-shell.is-loaded .feature-report,
+        .app-shell.is-loaded .workspace {
+            display: grid;
+        }
+
+        .app-shell.is-loaded .upload-toolbar {
+            display: flex;
+        }
+
+        @media (max-width: 1120px) {
+            .app-shell.is-loaded {
+                grid-template-columns: 1fr;
+                grid-template-areas:
+                    "upload"
+                    "meta"
+                    "features"
+                    "workspace";
+            }
+        }
+
+        @media (max-width: 900px) {
+            .workspace {
+                grid-template-columns: 1fr;
+                grid-auto-rows: auto;
+            }
+
+            .panel-lottie,
+            .panel-svg {
+                grid-column: auto;
+            }
+
+            .preview,
+            .lottie-player {
+                min-height: 360px;
+            }
+        }
+
+        @media (max-width: 720px) {
+            body {
+                padding: 6px;
+            }
+
+            .stats,
+            .feature-report {
+                grid-template-columns: 1fr;
+            }
+
+            .upload-area {
+                padding: 24px 18px;
+            }
+
+            .app-shell:not(.is-loaded) .upload-area {
+                min-height: calc(100vh - 24px);
+            }
+
+            .preview,
+            .lottie-player {
+                min-height: 300px;
+            }
+        }
+
+        @media (max-width: 520px) {
+            .app-shell.is-loaded .upload-toolbar {
+                flex-direction: column;
+                align-items: stretch;
+            }
+
+            .status {
+                order: 2;
+            }
+
+            .upload-toolbar-actions {
+                width: 100%;
+                margin-left: 0;
+            }
+
+            .upload-toolbar-actions button {
+                width: 100%;
+            }
+
+            .panel-header {
+                flex-wrap: wrap;
+                align-items: stretch;
+            }
+
+            .panel-actions {
+                width: 100%;
+                justify-content: space-between;
+                margin-left: 0;
+            }
+
+            .switch-control {
+                order: 2;
+            }
+
+            .view-switch {
+                flex: 1;
+            }
+
+            .view-btn {
+                flex: 1;
+            }
+
+            .panel-size,
+            .panel-download {
+                min-width: 0;
+            }
+        }
+    </style>
+  <script type="module" crossorigin src="./assets/index-B3RFzlFq.js"></script>
+</head>
+<body>
+
+<div class="container">
+    <div id="appShell" class="app-shell">
+        <section class="upload-section card">
+            <div class="upload-shell">
+                <div id="uploadArea" class="upload-area">
+                    <div class="upload-copy">
+                        <h1>上传 Lottie JSON</h1>
+                        <p>点击选择文件，上传后会自动显示 JSON 信息、转换为 SVG 动画。</p>
+                    </div>
+                    <input type="file" id="fileInput" accept=".json" style="display: none;">
+                </div>
+                <div class="upload-toolbar">
+                    <div id="statusText" class="status">等待上传 JSON 文件</div>
+                    <div class="upload-toolbar-actions">
+                        <button id="clearBtn" class="button-secondary" type="button" style="display:none;">清空</button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="stats" aria-label="素材元信息">
+            <div class="stat">
+                <span class="stat-label">画布</span>
+                <span class="stat-value" id="metaSize">-</span>
+            </div>
+            <div class="stat">
+                <span class="stat-label">帧率</span>
+                <span class="stat-value" id="metaFps">-</span>
+            </div>
+            <div class="stat">
+                <span class="stat-label">图层数</span>
+                <span class="stat-value" id="metaLayers">-</span>
+            </div>
+        </section>
+
+        <section class="feature-report" aria-label="特性列表">
+            <div class="feature-group supported">
+                <div class="feature-group-header">
+                    <span class="feature-badge">支持特性</span>
+                </div>
+                <ul id="supportedFeatures" class="feature-list">
+                    <li class="feature-empty">上传后会显示当前素材中已命中的可解析特性。</li>
+                </ul>
+            </div>
+            <div class="feature-group unsupported">
+                <div class="feature-group-header">
+                    <span class="feature-badge">未支持特性</span>
+                </div>
+                <ul id="unsupportedFeatures" class="feature-list">
+                    <li class="feature-empty">如果素材里出现当前解析器未覆盖的特性，这里会列出来。</li>
+                </ul>
+            </div>
+        </section>
+
+        <section class="workspace">
+            <div class="panel panel-lottie">
+                <div class="panel-header">
+                    <span class="panel-tag json">Lottie JSON</span>
+                    <div class="panel-actions">
+                        <span id="jsonSizeLabel" class="panel-size">-</span>
+                        <div class="view-switch" aria-label="Lottie JSON 面板视图切换">
+                            <button id="jsonPreviewBtn" class="view-btn is-active" type="button">预览</button>
+                            <button id="jsonCodeBtn" class="view-btn" type="button">源码</button>
+                        </div>
+                    </div>
+                </div>
+                <div id="jsonPreviewView" class="panel-view is-active">
+                    <div class="panel-surface lottie-stage">
+                        <div id="lottiePreview" class="lottie-player">
+                            <div class="empty-state">上传一个 Lottie JSON 后，这里会播放原始动画，方便和 SVG 结果对照。</div>
+                        </div>
+                    </div>
+                </div>
+                <div id="jsonCodeView" class="panel-view" hidden>
+                    <div class="panel-surface">
+                        <textarea id="jsonOutput" class="code-box json-source" readonly placeholder="上传后的 JSON 源码会显示在这里..."></textarea>
+                    </div>
+                </div>
+            </div>
+
+            <div class="panel panel-svg">
+                <div class="panel-header">
+                    <span class="panel-tag svg">SVG</span>
+                    <div class="panel-actions">
+                        <div class="switch-control">
+                            <span>压缩</span>
+                            <button id="svgCompressionToggle" class="switch-button" type="button" role="switch" aria-checked="true" aria-label="切换 SVG 压缩输出">
+                                <span class="switch-thumb"></span>
+                            </button>
+                        </div>
+                        <span id="svgSizeLabel" class="panel-size">-</span>
+                        <div class="view-switch" aria-label="SVG 面板视图切换">
+                            <button id="svgPreviewBtn" class="view-btn is-active" type="button">预览</button>
+                            <button id="svgCodeBtn" class="view-btn" type="button">源码</button>
+                        </div>
+                        <button id="downloadBtn" class="panel-download" style="display:none;">导出</button>
+                    </div>
+                </div>
+                <div id="svgPreviewView" class="panel-view is-active">
+                    <div id="preview" class="preview panel-surface">
+                        <div class="empty-state">上传一个 Lottie JSON 后，这里会显示编译后的 SVG 预览。</div>
+                    </div>
+                </div>
+                <div id="svgCodeView" class="panel-view" hidden>
+                    <div class="panel-surface">
+                        <textarea id="output" class="code-box" readonly placeholder="解析后的代码将在此显示..."></textarea>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </div>
+</div>
+
+</body>
+</html>
